@@ -17,6 +17,10 @@ export class Keyboard {
     window.addEventListener('blur', () => this.down.clear());
   }
 
+  isDown(code: string) {
+    return this.down.has(code);
+  }
+
   on(code: string, fn: () => void) {
     this.handlers.set(code, fn);
   }

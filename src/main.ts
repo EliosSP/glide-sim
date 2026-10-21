@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
-import { PHYSICS_DT, START, VEHICLE } from './config';
+import { PHYSICS_DT, START, TARGET_SPACE_LENGTH, VEHICLE } from './config';
 import { World, type Quality, type TimeOfDay } from './scene/world';
 import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
@@ -11,10 +11,13 @@ import { Hud } from './ui/hud';
 import { CentralDisplay } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
 import { MirrorReflection, aimMirror } from './mirrors/mirrorReflection';
+import { LightBar, type BarView } from './mirrors/lightBar';
+import { planParallel, type ParkPlan } from './planner/parallelPlanner';
+import { AssistedManeuver, DEFAULT_ASSIST, PHASE_LABELS } from './modes/assisted';
 
 const app = document.getElementById('app')!;
 const world = new World(app);
-const street = buildStreet(world);
+const street = buildStreet(world, TARGET_SPACE_LENGTH);
 
 const rig = createCar({ color: 0x4f6d7a, interior: true });
 world.scene.add(rig.root);
@@ -33,6 +36,45 @@ const mirrors = [
   new MirrorReflection(glassOf(rig.mirrors.right), 0.55),
 ];
 for (const m of mirrors) m.hide = [rig.mirrors.left, rig.mirrors.right];
+
+// Light bars on the mirror rims; the zero end is always the one towards the car
+const bars = {
+  left: new LightBar(0.18, 0.014, false),
+  right: new LightBar(0.18, 0.014, true),
+};
+rig.mirrors.left.getObjectByName('bar-mount')!.add(bars.left.mesh);
+rig.mirrors.right.getObjectByName('bar-mount')!.add(bars.right.mesh);
+
+// --- assisted manoeuvre (milestone 3: started with key 1 on the target space) ---
+const targetSpace = street.spaces.find((s) => s.isTarget)!;
+let maneuver: AssistedManeuver | null = null;
+let lastBarViews: { left: BarView; right: BarView } | null = null;
+let assistMsg = '';
+const pathLine = new THREE.Line(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ color: 0x35d0ff, depthTest: false, transparent: true, opacity: 0.8 }),
+);
+pathLine.renderOrder = 10;
+pathLine.visible = false;
+world.scene.add(pathLine);
+
+function showPath(plan: ParkPlan | null) {
+  pathLine.visible = !!plan;
+  if (!plan) return;
+  // Rear-axle trajectory, drawn just above the road
+  pathLine.geometry.setFromPoints(plan.path.map((p) => new THREE.Vector3(p.x, 0.03, p.z)));
+}
+
+function startAssisted() {
+  const plan = planParallel(targetSpace, collisions, car.z);
+  if (!plan) {
+    assistMsg = 'Nessuna manovra possibile da questa posizione';
+    return;
+  }
+  assistMsg = '';
+  maneuver = new AssistedManeuver(plan, collisions, DEFAULT_ASSIST, (e) => console.debug('[assist]', e), performance.now() / 1000);
+  showPath(plan);
+}
 
 const views = new Views(rig, world.renderer.domElement);
 const display = new CentralDisplay(rig.displayMesh!);
@@ -62,7 +104,11 @@ keys.on('KeyR', () => (gearMsg = car.setGear('R') ? '' : 'Fermati per inserire l
 keys.on('KeyD', () => (gearMsg = car.setGear('D') ? '' : 'Fermati per inserire la marcia'));
 keys.on('KeyC', () => views.cycle());
 keys.on('KeyV', () => (views.split = !views.split));
-keys.on('KeyH', () => hud.toggle());
+keys.on('KeyH', () => {
+  hud.toggle();
+  pathLine.visible = hud.visible && !!maneuver;
+});
+keys.on('Digit1', startAssisted);
 keys.on('F1', () => gui.show((guiVisible = !guiVisible)));
 keys.on('Escape', () => {
   car.reset(START.x, START.z, START.heading);
@@ -70,6 +116,9 @@ keys.on('Escape', () => {
   gearMsg = '';
   contacts = 0;
   inContact = null;
+  maneuver = null;
+  assistMsg = '';
+  showPath(null);
 });
 
 window.addEventListener('resize', () => world.resize());
@@ -123,6 +172,14 @@ function frame(time: number) {
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
   display.update(car.gear, Math.abs(car.speed) * 3.6);
+  views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : null;
+
+  const now = performance.now() / 1000;
+  const off: BarView = { kind: 'off' };
+  const barViews = maneuver ? maneuver.update(car, now) : { left: off, right: off };
+  bars.left.draw(barViews.left, now);
+  bars.right.draw(barViews.right, now);
+  lastBarViews = barViews;
 
   render();
 
@@ -150,10 +207,30 @@ function frame(time: number) {
     `Volante   ${car.steeringWheelDeg.toFixed(0)}°`,
     `Posizione x ${car.x.toFixed(2)}  z ${car.z.toFixed(2)}  ψ ${THREE.MathUtils.radToDeg(car.heading).toFixed(1)}°`,
     `Contatti  ${contacts}${inContact ? `  ⚠ contatto con ${CONTACT_LABEL[inContact]}` : ''}`,
+    ...assistHud(),
     `FPS       ${fps.toFixed(0)}${autoDowngraded ? ' (qualità bassa automatica)' : ''}`,
     gearMsg,
   ]);
   requestAnimationFrame(frame);
+}
+
+function assistHud(): string[] {
+  if (!maneuver) return [assistMsg || 'Premi 1 per il parcheggio assistito'];
+  const m = maneuver;
+  const pl = m.plan;
+  const deg = (r: number) => THREE.MathUtils.radToDeg(r).toFixed(0);
+  const lines = [
+    `Fase      ${PHASE_LABELS[m.phase]} — ${m.instruction}`,
+    `Piano     sterzo ${deg(pl.steer1)}° / controsterzo ${deg(pl.steer2)}°, margine min ${(pl.minCarClearance * 100).toFixed(0)} cm`,
+    `Oltre     ${m.overs}   errori sterzo ${m.steerErrors.map((e) => (e * 100).toFixed(0) + '%').join(' ')}`,
+  ];
+  if (m.result) {
+    const r = m.result;
+    lines.push(
+      `Risultato ${r.seconds.toFixed(0)} s, cordolo ${(r.curbGap * 100).toFixed(0)} cm, davanti ${(r.frontGap * 100).toFixed(0)} cm, dietro ${(r.rearGap * 100).toFixed(0)} cm`,
+    );
+  }
+  return lines;
 }
 
 const eyeWorld = new THREE.Vector3();
@@ -192,5 +269,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { car, street, world, views, rig });
+Object.assign(window, { car, street, world, views, rig, getManeuver: () => maneuver, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

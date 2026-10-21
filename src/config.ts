@@ -40,6 +40,10 @@ export const ROAD = {
   },
 };
 
+// Target space length. Spec default is car + 1.0 m, but a single two-arc reverse manoeuvre with this car
+// (2.6 m wheelbase, 35° lock) needs ≥ car + 2.0 m. Temporary value until the group decides (see README).
+export const TARGET_SPACE_LENGTH = VEHICLE.length + 2.2;
+
 export const START = { x: -55, z: ROAD.laneWidth / 2 + 0.1, heading: 0 };
 
 export const PHYSICS_DT = 1 / 120;

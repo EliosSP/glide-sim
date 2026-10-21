@@ -1,6 +1,7 @@
 const HELP =
   '↑/↓ acceleratore/freno · ←/→ volante · R retro · D marcia · Spazio freno forte · ' +
-  'C cambia vista · V split · trascina: gira la testa (doppio clic: centra) · H nasconde · F1 parametri · Esc reset';
+  'Z/X (tieni premuto) guarda specchietto sx/dx · 1 assistito · C cambia vista · V split · ' +
+  'trascina: gira la testa (doppio clic: centra) · H nasconde · F1 parametri · Esc reset';
 
 /** Debug overlay (hidden with H). */
 export class Hud {
