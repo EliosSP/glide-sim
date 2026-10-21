@@ -202,7 +202,7 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   const g = new THREE.Group();
   g.name = side < 0 ? 'mirror-left' : 'mirror-right';
   g.position.set(1.7, 1.04, side * 1.04);
-  const shell = new THREE.Mesh(new RoundedBoxGeometry(0.11, 0.13, 0.22, 3, 0.035), paintMat);
+  const shell = new THREE.Mesh(new RoundedBoxGeometry(0.11, 0.135, 0.225, 3, 0.035), paintMat);
   shell.castShadow = true;
   shell.name = 'shell';
   g.add(shell);
@@ -215,7 +215,7 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   );
   glass.name = 'glass';
   glass.rotation.y = -Math.PI / 2; // faces -X (backwards)
-  glass.position.x = -0.057;
+  glass.position.x = -0.066; // clear of the housing even with a few degrees of pitch
   g.add(glass);
   return g;
 }

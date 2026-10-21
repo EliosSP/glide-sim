@@ -42,6 +42,7 @@ function noiseTexture(base: [number, number, number], spread: number, seed: numb
 export interface Street {
   group: THREE.Group;
   parkedCars: ParkedCar[];
+  oppositeCars: ParkedCar[];
   spaces: FreeSpace[];
 }
 
@@ -112,10 +113,11 @@ export function buildStreet(world: World, targetSpaceLength?: number): Street {
   // Parked cars
   const { cars, spaces } = buildParkingRow(targetSpaceLength);
   for (const c of cars) group.add(createParkedCar(c.x, c.z, c.length, c.color).root);
-  for (const c of buildOppositeRow()) group.add(createParkedCar(c.x, c.z, c.length, c.color, -1).root);
+  const oppositeCars = buildOppositeRow();
+  for (const c of oppositeCars) group.add(createParkedCar(c.x, c.z, c.length, c.color, -1).root);
 
   world.scene.add(group);
-  return { group, parkedCars: cars, spaces };
+  return { group, parkedCars: cars, oppositeCars, spaces };
 }
 
 function facadeTexture(seed: number) {

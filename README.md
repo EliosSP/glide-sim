@@ -12,7 +12,7 @@ npm run dev
 
 Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 
-## Comandi (milestone 1)
+## Comandi
 
 | Tasto | Azione |
 |---|---|
@@ -27,6 +27,11 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 | F1 | pannello parametri |
 | Esc | reset scenario |
 
+## Cosa simula
+
+- **Collisioni:** carrozzeria contro auto parcheggiate, pneumatici contro il cordolo. Al contatto l'auto si ferma e il contatto viene contato (HUD, poi log CSV).
+- **Specchietti:** riflesso reale calcolato dall'occhio del guidatore (cambia se giri la testa). Destro convesso (campo più ampio, come sulle auto europee), sinistro quasi piano.
+
 ## Parametri (F1)
 
 - **Ora**: giorno / sera
@@ -35,7 +40,7 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 ## Stato
 
 - [x] 1. Scena, strada, auto con cinematica e tastiera, viste
-- [ ] 2. Specchietti con riflesso reale
+- [x] 2. Specchietti con riflesso reale
 - [ ] 3. Pianificatore + barra luminosa (assistita)
 - [ ] 4. Display centrale
 - [ ] 5. Modalità autonoma

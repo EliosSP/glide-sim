@@ -38,6 +38,7 @@ export class World {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = false; // updated once per frame in main
     container.appendChild(this.renderer.domElement);
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
 

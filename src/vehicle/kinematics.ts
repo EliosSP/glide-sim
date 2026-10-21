@@ -32,6 +32,16 @@ export class VehicleState {
     this.gear = 'D';
   }
 
+  snapshot() {
+    return { x: this.x, z: this.z, heading: this.heading, steer: this.steer, wheelSpin: this.wheelSpin };
+  }
+
+  /** Back to a previous pose and stop (used on contact). */
+  restore(s: ReturnType<VehicleState['snapshot']>) {
+    Object.assign(this, s);
+    this.speed = 0;
+  }
+
   /** Steering-wheel angle in degrees (positive = clockwise/right). */
   get steeringWheelDeg() {
     return (this.steer / DEG) * VEHICLE.steeringRatio;
