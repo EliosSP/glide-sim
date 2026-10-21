@@ -1,4 +1,4 @@
-import { ROAD, VEHICLE } from '../config';
+import { ROAD, SHORT_SPACE_LENGTH, VEHICLE } from '../config';
 
 export interface ParkedCar {
   x: number; // centre
@@ -22,14 +22,14 @@ type Item = { kind: 'car'; length: number } | { kind: 'gap'; length: number; id?
 export function buildParkingRow(targetLength = VEHICLE.length + 1.0) {
   const before: Item[] = [
     { kind: 'car', length: 4.3 }, { kind: 'gap', length: 0.9 },
-    { kind: 'car', length: 4.0 }, { kind: 'gap', length: 3.4, id: 'short' },
+    { kind: 'car', length: 4.0 }, { kind: 'gap', length: SHORT_SPACE_LENGTH, id: 'short' },
     { kind: 'car', length: 4.5 }, { kind: 'gap', length: 1.1 },
     { kind: 'car', length: 4.2 }, { kind: 'gap', length: 0.8 },
     { kind: 'car', length: 4.4 },
   ];
   const after: Item[] = [
     { kind: 'car', length: 4.2 }, { kind: 'gap', length: 1.0 },
-    { kind: 'car', length: 3.9 }, { kind: 'gap', length: 6.6, id: 'wide' },
+    { kind: 'car', length: 3.9 }, { kind: 'gap', length: 7.2, id: 'wide' },
     { kind: 'car', length: 4.6 }, { kind: 'gap', length: 0.9 },
     { kind: 'car', length: 4.1 }, { kind: 'gap', length: 1.2 },
     { kind: 'car', length: 4.3 },

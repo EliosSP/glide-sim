@@ -42,19 +42,16 @@ const X0 = 10;
 const X1 = W - 10;
 const OVER_BLINK_HZ = 3;
 
+/** Mirror strip: a BarPainter canvas shown on an unlit plane. */
 export class LightBar {
   readonly mesh: THREE.Mesh;
-  private canvas = document.createElement('canvas');
-  private g: CanvasRenderingContext2D;
+  readonly painter: BarPainter;
   private texture: THREE.CanvasTexture;
-  private lastKey = '';
 
   /** innerAtLeft: true when the strip's local -x end faces the car. */
-  constructor(width: number, height: number, innerAtLeft: boolean, public style: BarStyle = DEFAULT_BAR_STYLE) {
-    this.canvas.width = W;
-    this.canvas.height = H;
-    this.g = this.canvas.getContext('2d')!;
-    this.texture = new THREE.CanvasTexture(this.canvas);
+  constructor(width: number, height: number, innerAtLeft: boolean, style: BarStyle = DEFAULT_BAR_STYLE) {
+    this.painter = new BarPainter(style);
+    this.texture = new THREE.CanvasTexture(this.painter.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 8;
     if (!innerAtLeft) {
@@ -70,6 +67,27 @@ export class LightBar {
     this.draw({ kind: 'off' }, 0);
   }
 
+  get style() {
+    return this.painter.style;
+  }
+
+  draw(v: BarView, now: number) {
+    if (this.painter.paint(v, now)) this.texture.needsUpdate = true;
+  }
+}
+
+/** Draws a BarView on its own 1024×64 canvas (0 = inner end on the left). */
+export class BarPainter {
+  readonly canvas = document.createElement('canvas');
+  private g: CanvasRenderingContext2D;
+  private lastKey = '';
+
+  constructor(public style: BarStyle = DEFAULT_BAR_STYLE) {
+    this.canvas.width = W;
+    this.canvas.height = H;
+    this.g = this.canvas.getContext('2d')!;
+  }
+
   private blinkVisible(start: number | null, now: number) {
     if (start === null) return true;
     const { blinkCount, blinkOn, blinkOff } = this.style;
@@ -79,13 +97,14 @@ export class LightBar {
     return t % period < blinkOn;
   }
 
-  draw(v: BarView, now: number) {
+  /** Returns true when the canvas changed. */
+  paint(v: BarView, now: number): boolean {
     // Redraw only when something visible changes
     const blinking =
       (v.kind === 'steer' && (!this.blinkVisible(v.blinkStart, now) || v.fill > (v.target ?? 2) + v.tol)) ||
       (v.kind === 'count' && (v.blinkStart !== null || v.overshoot > 0));
     const key = JSON.stringify(v) + (blinking ? Math.floor(now * 20) : '') + this.style.color + this.style.brightness;
-    if (key === this.lastKey) return;
+    if (key === this.lastKey) return false;
     this.lastKey = key;
 
     const g = this.g;
@@ -93,7 +112,7 @@ export class LightBar {
     g.setLineDash([]);
     g.fillStyle = '#0b0d0f'; // unlit diffuser
     g.fillRect(0, 0, W, H);
-    if (v.kind === 'off') return this.flush();
+    if (v.kind === 'off') return true;
 
     const lit = this.litColor();
     const xAt = (f: number) => X0 + Math.max(0, Math.min(1, f)) * (X1 - X0);
@@ -106,7 +125,7 @@ export class LightBar {
       g.setLineDash([22, 14]);
       g.strokeRect(X0, 18, X1 - X0, 28); // rail
       g.strokeRect(xAt(v.target - v.tol), 4, xAt(v.target + v.tol) - xAt(v.target - v.tol), 56); // notch
-      return this.flush();
+      return true;
     }
 
     if (v.kind === 'steer') {
@@ -132,7 +151,7 @@ export class LightBar {
           g.strokeRect(a, 3, b - a, 58);
         }
       }
-      return this.flush();
+      return true;
     }
 
     // count
@@ -153,14 +172,10 @@ export class LightBar {
       const to = from + v.overshoot * (X1 - from);
       for (let x = from; x < to; x += 26) g.fillRect(x, 22, Math.min(14, to - x), 20);
     }
-    this.flush();
+    return true;
   }
 
   private litColor() {
     return new THREE.Color(this.style.color).multiplyScalar(this.style.brightness).getStyle();
-  }
-
-  private flush() {
-    this.texture.needsUpdate = true;
   }
 }

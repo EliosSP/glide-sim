@@ -40,9 +40,14 @@ export const ROAD = {
   },
 };
 
-// Target space length. Spec default is car + 1.0 m, but a single two-arc reverse manoeuvre with this car
-// (2.6 m wheelbase, 35° lock) needs ≥ car + 2.0 m. Temporary value until the group decides (see README).
+// A single two-arc reverse manoeuvre with this car (2.6 m wheelbase, 35° lock) needs ≥ car + 2.0 m.
+// Group decision: "tight" = car + 2.2 m; car + 1.0 m is shown as "doesn't fit in one manoeuvre".
 export const TARGET_SPACE_LENGTH = VEHICLE.length + 2.2;
+export const SHORT_SPACE_LENGTH = VEHICLE.length + 1.0;
+/** Minimum extra length over the car for a single manoeuvre (from the planner, see above). */
+export const ONE_MANOEUVRE_MIN_EXTRA = 2.0;
+/** From this length a space counts as "wide" (autonomous recommended when well detected). */
+export const WIDE_SPACE_MIN = VEHICLE.length + 2.5;
 
 export const START = { x: -55, z: ROAD.laneWidth / 2 + 0.1, heading: 0 };
 

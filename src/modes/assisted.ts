@@ -53,6 +53,8 @@ export class AssistedManeuver {
   steerErrors: number[] = [];
   result: AssistResult | null = null;
   instruction = '';
+  /** While reversing: curvature being driven and distance left to the next point (for the camera overlay). */
+  guide: { kappa: number; remaining: number } | null = null;
 
   private t0: number;
   private range = 5;
@@ -92,6 +94,7 @@ export class AssistedManeuver {
     const fillRight = Math.max(0, car.steer) / MAX_STEER;
     const fillLeft = Math.max(0, -car.steer) / MAX_STEER;
     const p = this.params;
+    this.guide = null;
 
     switch (this.phase) {
       case 'positioning': {
@@ -125,6 +128,7 @@ export class AssistedManeuver {
         const k1 = car.steer > 0.02 ? kappaOf(car.steer) : kappaOf(this.plan.steer1);
         const sol = solveSwitch(pose, k1, kappaOf(this.plan.steer2), finalZ());
         const view = this.countdown(sol.remaining, now, 'right');
+        this.guide = { kappa: k1, remaining: sol.remaining };
         this.instruction = sol.remaining > p.pointTol ? 'Retro: guarda lo specchietto destro' : sol.remaining < -p.pointTol ? 'Troppo indietro: vai avanti' : 'Fermati qui';
         // Pre-announce the counter-steer in the left mirror
         let left: BarView = OFF;
@@ -156,6 +160,7 @@ export class AssistedManeuver {
         const k2 = car.steer < -0.02 ? kappaOf(car.steer) : -kappaOf(this.steer2Target * MAX_STEER);
         const remaining = car.heading / k2; // > 0 while still angled towards the curb
         const view = this.countdown(remaining, now, 'left');
+        this.guide = { kappa: k2, remaining };
         this.instruction = remaining > p.pointTol ? 'Retro: guarda lo specchietto sinistro' : remaining < -p.pointTol ? 'Troppo: vai avanti' : 'Fermati e raddrizza';
         if (Math.abs(remaining) <= p.pointTol && stopped && this.reachedFor(now)) this.go('inside', now);
         return { left: view, right: OFF };
@@ -194,6 +199,7 @@ export class AssistedManeuver {
       rearGap: gaps.rear,
       steerErrors: this.steerErrors,
     };
+    this.instruction = 'P inserita';
     this.go('done', now);
   }
 

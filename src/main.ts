@@ -12,8 +12,11 @@ import { CentralDisplay } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
 import { MirrorReflection, aimMirror } from './mirrors/mirrorReflection';
 import { LightBar, type BarView } from './mirrors/lightBar';
-import { planParallel, type ParkPlan } from './planner/parallelPlanner';
-import { AssistedManeuver, DEFAULT_ASSIST, PHASE_LABELS } from './modes/assisted';
+import type { ParkPlan } from './planner/parallelPlanner';
+import { PHASE_LABELS } from './modes/assisted';
+import { GlideFlow } from './modes/flow';
+import { ReconView } from './display/recon';
+import { RearCamera } from './display/rearCamera';
 
 const app = document.getElementById('app')!;
 const world = new World(app);
@@ -45,11 +48,11 @@ const bars = {
 rig.mirrors.left.getObjectByName('bar-mount')!.add(bars.left.mesh);
 rig.mirrors.right.getObjectByName('bar-mount')!.add(bars.right.mesh);
 
-// --- assisted manoeuvre (milestone 3: started with key 1 on the target space) ---
-const targetSpace = street.spaces.find((s) => s.isTarget)!;
-let maneuver: AssistedManeuver | null = null;
+// --- Glide flow: approach, space choice, P, mode choice, assisted manoeuvre, end ---
+const flowSettings = { cameraWhileMoving: false, curbPoorlyVisible: false };
+const flow = new GlideFlow(street.spaces, collisions, flowSettings, (e) => console.debug('[glide]', e), START.z);
 let lastBarViews: { left: BarView; right: BarView } | null = null;
-let assistMsg = '';
+let shownPlan: ParkPlan | null = null;
 const pathLine = new THREE.Line(
   new THREE.BufferGeometry(),
   new THREE.LineBasicMaterial({ color: 0x35d0ff, depthTest: false, transparent: true, opacity: 0.8 }),
@@ -58,26 +61,17 @@ pathLine.renderOrder = 10;
 pathLine.visible = false;
 world.scene.add(pathLine);
 
+/** Debug: planned rear-axle trajectory drawn on the road while the HUD is visible. */
 function showPath(plan: ParkPlan | null) {
-  pathLine.visible = !!plan;
-  if (!plan) return;
-  // Rear-axle trajectory, drawn just above the road
-  pathLine.geometry.setFromPoints(plan.path.map((p) => new THREE.Vector3(p.x, 0.03, p.z)));
-}
-
-function startAssisted() {
-  const plan = planParallel(targetSpace, collisions, car.z);
-  if (!plan) {
-    assistMsg = 'Nessuna manovra possibile da questa posizione';
-    return;
-  }
-  assistMsg = '';
-  maneuver = new AssistedManeuver(plan, collisions, DEFAULT_ASSIST, (e) => console.debug('[assist]', e), performance.now() / 1000);
-  showPath(plan);
+  if (plan !== shownPlan && plan) pathLine.geometry.setFromPoints(plan.path.map((p) => new THREE.Vector3(p.x, 0.03, p.z)));
+  shownPlan = plan;
+  pathLine.visible = !!plan && hud.visible;
 }
 
 const views = new Views(rig, world.renderer.domElement);
 const display = new CentralDisplay(rig.displayMesh!);
+const recon = new ReconView(street.parkedCars, street.oppositeCars, street.spaces, 640, 576);
+const rearCam = new RearCamera(rig, 640, 576);
 const hud = new Hud();
 const keys = new Keyboard();
 
@@ -85,6 +79,7 @@ const keys = new Keyboard();
 const params = { time: 'day' as TimeOfDay, quality: 'high' as Quality };
 const gui = new GUI({ title: 'Parametri' });
 const sceneFolder = gui.addFolder('Scena');
+const displayFolder = gui.addFolder('Display');
 sceneFolder.add(params, 'time', { Giorno: 'day', Sera: 'evening' }).name('Ora').onChange((t: TimeOfDay) => world.setTime(t));
 const qualityCtrl = sceneFolder
   .add(params, 'quality', { Alta: 'high', Bassa: 'low' })
@@ -94,6 +89,7 @@ function setQuality(q: Quality) {
   world.setQuality(q);
   for (const m of mirrors) m.setResolution(q === 'high' ? 640 : 320);
 }
+displayFolder.add(flowSettings, 'cameraWhileMoving').name('Telecamera in movimento');
 let guiVisible = false;
 gui.show(guiVisible);
 world.setTime('day');
@@ -104,11 +100,13 @@ keys.on('KeyR', () => (gearMsg = car.setGear('R') ? '' : 'Fermati per inserire l
 keys.on('KeyD', () => (gearMsg = car.setGear('D') ? '' : 'Fermati per inserire la marcia'));
 keys.on('KeyC', () => views.cycle());
 keys.on('KeyV', () => (views.split = !views.split));
-keys.on('KeyH', () => {
-  hud.toggle();
-  pathLine.visible = hud.visible && !!maneuver;
-});
-keys.on('Digit1', startAssisted);
+keys.on('KeyH', () => hud.toggle());
+const nowS = () => performance.now() / 1000;
+keys.on('KeyE', () => flow.onBlinker('right', car, nowS()));
+keys.on('KeyQ', () => flow.onBlinker('left', car, nowS()));
+keys.on('KeyP', () => flow.onParkButton(car, nowS(), contacts));
+keys.on('Digit1', () => flow.onModeChosen('assisted', car, nowS()));
+keys.on('Digit2', () => flow.onModeChosen('auto', car, nowS()));
 keys.on('F1', () => gui.show((guiVisible = !guiVisible)));
 keys.on('Escape', () => {
   car.reset(START.x, START.z, START.heading);
@@ -116,9 +114,7 @@ keys.on('Escape', () => {
   gearMsg = '';
   contacts = 0;
   inContact = null;
-  maneuver = null;
-  assistMsg = '';
-  showPath(null);
+  flow.reset();
 });
 
 window.addEventListener('resize', () => world.resize());
@@ -171,15 +167,28 @@ function frame(time: number) {
   rig.root.updateMatrixWorld();
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
-  display.update(car.gear, Math.abs(car.speed) * 3.6);
   views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : null;
 
   const now = performance.now() / 1000;
-  const off: BarView = { kind: 'off' };
-  const barViews = maneuver ? maneuver.update(car, now) : { left: off, right: off };
-  bars.left.draw(barViews.left, now);
-  bars.right.draw(barViews.right, now);
-  lastBarViews = barViews;
+  const out = flow.update(car, now, contacts);
+  bars.left.draw(out.bars.left, now);
+  bars.right.draw(out.bars.right, now);
+  lastBarViews = out.bars;
+  showPath(flow.maneuver?.plan ?? null);
+
+  // Spaces in the reconstruction: blue where the car fits, highlighted when chosen
+  for (const sp of street.spaces) {
+    const fits = flow.evaluation?.space === sp ? flow.evaluation.fits : flow.fits.get(sp.id)!;
+    const chosen = flow.chosen === sp && (flow.screen === 'approach' || flow.screen === 'choose');
+    recon.setSpaceLook(sp.id, chosen ? (fits ? 'chosen' : 'chosenNoFit') : fits ? 'fits' : 'noFit');
+  }
+  const vp = CentralDisplay.viewportFor(out.display);
+  if (vp === 'recon') recon.render(world.renderer, { x: car.x, z: car.z, heading: car.heading }, dt);
+  if (vp === 'camera') {
+    world.renderer.shadowMap.needsUpdate = true;
+    rearCam.render(world.renderer, world.scene);
+  }
+  display.update(out.display, now, recon.target.texture, rearCam, flow.guide);
 
   render();
 
@@ -215,8 +224,8 @@ function frame(time: number) {
 }
 
 function assistHud(): string[] {
-  if (!maneuver) return [assistMsg || 'Premi 1 per il parcheggio assistito'];
-  const m = maneuver;
+  const m = flow.maneuver;
+  if (!m) return [`Flusso    ${flow.screen}${flow.chosen ? ` · spazio ${flow.chosen.id}` : ''}`];
   const pl = m.plan;
   const deg = (r: number) => THREE.MathUtils.radToDeg(r).toFixed(0);
   const lines = [
@@ -269,5 +278,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { car, street, world, views, rig, getManeuver: () => maneuver, getBars: () => lastBarViews });
+Object.assign(window, { car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);
