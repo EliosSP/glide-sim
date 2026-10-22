@@ -64,14 +64,14 @@ aimMirror(rig.mirrors.left, glassOf(rig.mirrors.left), eyeLocal, new THREE.Vecto
 aimMirror(rig.mirrors.right, glassOf(rig.mirrors.right), eyeLocal, new THREE.Vector3(-1, -0.07, 0.05));
 const MIRROR_RES = { high: 1024, low: 512 }; // side mirrors; the rear-view mirror uses half
 const mirrors = [
-  new MirrorReflection(glassOf(rig.mirrors.left), 0.85, MIRROR_RES.high),
-  new MirrorReflection(glassOf(rig.mirrors.right), 0.55, MIRROR_RES.high),
+  new MirrorReflection(glassOf(rig.mirrors.left), 0.85, MIRROR_RES.high, 0.3),
+  new MirrorReflection(glassOf(rig.mirrors.right), 0.55, MIRROR_RES.high, 0.3),
 ];
 for (const m of mirrors) m.hide = [rig.mirrors.left, rig.mirrors.right];
 // Interior rear-view mirror: flat, lower resolution, only rendered when the driver view is on screen
 const rearMirrorGroup = rig.rearMirror!;
 aimMirror(rearMirrorGroup, glassOf(rearMirrorGroup), eyeLocal, new THREE.Vector3(-1, -0.04, 0));
-const rearMirror = new MirrorReflection(glassOf(rearMirrorGroup), 1, MIRROR_RES.high / 2);
+const rearMirror = new MirrorReflection(glassOf(rearMirrorGroup), 1, MIRROR_RES.high / 2, 0.45);
 rearMirror.hide = [rearMirrorGroup];
 let frameNo = 0;
 

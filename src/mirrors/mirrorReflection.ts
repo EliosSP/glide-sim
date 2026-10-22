@@ -28,7 +28,8 @@ export class MirrorReflection {
   /** Objects hidden while rendering the reflection (the mirror housings themselves). */
   hide: THREE.Object3D[] = [];
 
-  constructor(readonly glass: THREE.Mesh, public convex = 1, resolution = 512) {
+  /** corner: radius of the glass corners as a fraction of its height (0 = square). */
+  constructor(readonly glass: THREE.Mesh, public convex = 1, resolution = 512, corner = 0) {
     const p = (glass.geometry as THREE.PlaneGeometry).parameters;
     this.w = p.width;
     this.h = p.height;
@@ -46,6 +47,11 @@ export class MirrorReflection {
     tex.offset.x = 1;
     tex.wrapS = THREE.RepeatWrapping;
     glass.material = new THREE.MeshBasicMaterial({ map: tex, color: 0xd6d9dc });
+    if (corner > 0) {
+      const m = glass.material as THREE.MeshBasicMaterial;
+      m.alphaMap = roundedMask(this.w / this.h, corner);
+      m.alphaTest = 0.5;
+    }
   }
 
   setResolution(resolution: number) {
@@ -96,6 +102,23 @@ export class MirrorReflection {
     renderer.setRenderTarget(prev);
     for (const o of hidden) o.visible = true;
   }
+}
+
+/** White rounded rectangle on black, used as alpha mask for the glass corners. */
+function roundedMask(aspect: number, corner: number) {
+  const h = 128;
+  const w = Math.round(h * aspect);
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = '#fff';
+  g.beginPath();
+  g.roundRect(0, 0, w, h, corner * h);
+  g.fill();
+  return new THREE.CanvasTexture(c);
 }
 
 /**

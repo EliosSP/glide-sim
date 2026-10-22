@@ -13,7 +13,7 @@ export const VEHICLE = {
   maxSteerDeg: 35,
   steeringRatio: 15,
   // Driver eye, left-hand drive
-  eye: { x: 0.95, y: 1.2, z: -0.37 },
+  eye: { x: 0.85, y: 1.23, z: -0.37 }, // seat a bit back, as in a real driving position
 };
 
 export const DRIVE = {

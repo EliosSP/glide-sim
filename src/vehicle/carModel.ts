@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { VEHICLE } from '../config';
+import { buildInterior } from './interior';
 
 export type CarStyle = 'hatch' | 'sedan' | 'suv' | 'mpv';
 
@@ -133,8 +134,6 @@ function makeShared() {
     rimMat: new THREE.MeshStandardMaterial({ color: 0xb9bec4, metalness: 0.9, roughness: 0.3 }),
     headMat: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xeaf4ff, emissiveIntensity: 1.2 }),
     tailMat: new THREE.MeshStandardMaterial({ color: 0x400000, emissive: 0xc0101a, emissiveIntensity: 0.9 }),
-    interiorMat: new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.85 }),
-    seatMat: new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.95 }),
   };
 }
 
@@ -271,7 +270,7 @@ export function createCar(opts: { color: number; interior: boolean; style?: CarS
   body.add(mirrors.left, mirrors.right);
 
   const rig: CarRig = { root, body, frontPivots, spinners, mirrors };
-  if (opts.interior) buildInterior(rig, S);
+  if (opts.interior) buildInterior(rig);
   return rig;
 }
 
@@ -279,7 +278,7 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   const g = new THREE.Group();
   g.name = side < 0 ? 'mirror-left' : 'mirror-right';
   g.position.set(1.7, y, side * 1.04);
-  const shell = new THREE.Mesh(new RoundedBoxGeometry(0.11, 0.155, 0.225, 3, 0.035), paintMat);
+  const shell = new THREE.Mesh(new RoundedBoxGeometry(0.1, 0.155, 0.225, 6, 0.04), paintMat); // rounded, modern
   shell.castShadow = true;
   shell.name = 'shell';
   g.add(shell);
@@ -292,97 +291,15 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   );
   glass.name = 'glass';
   glass.rotation.y = -Math.PI / 2; // faces -X (backwards)
-  glass.position.set(-0.066, -0.009, 0); // clear of the housing even with a few degrees of pitch
+  glass.position.set(-0.0515, -0.009, 0); // just proud of the housing back; rounded corners (alpha mask) follow its shape
   g.add(glass);
   // Mount for the light bar: thin strip on the lower rim, below the glass, facing backwards
   const mount = new THREE.Object3D();
   mount.name = 'bar-mount';
-  mount.position.set(-0.059, -0.069, 0);
+  mount.position.set(-0.053, -0.069, 0);
   mount.rotation.y = -Math.PI / 2;
   g.add(mount);
   return g;
-}
-
-function buildInterior(rig: CarRig, S: NonNullable<typeof shared>) {
-  const b = rig.body;
-  const box = (sx: number, sy: number, sz: number, m: THREE.Material) => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    mesh.receiveShadow = true;
-    b.add(mesh);
-    return mesh;
-  };
-  box(1.97, 0.08, 1.66, S.interiorMat).position.set(0.64, 0.28, 0); // floor
-  box(0.45, 0.3, 1.64, S.interiorMat).position.set(1.73, 0.84, 0); // dashboard
-  box(0.5, 0.18, 0.22, S.interiorMat).position.set(1.15, 0.42, 0); // console
-
-  for (const z of [-0.37, 0.37]) {
-    box(0.5, 0.12, 0.5, S.seatMat).position.set(0.78, 0.5, z);
-    const back = box(0.12, 0.62, 0.5, S.seatMat);
-    back.position.set(0.5, 0.86, z);
-    back.rotation.z = -0.18;
-    box(0.1, 0.16, 0.26, S.seatMat).position.set(0.42, 1.25, z); // headrest
-  }
-  box(0.45, 0.14, 1.4, S.seatMat).position.set(-0.2, 0.5, 0); // rear bench
-  box(0.12, 0.55, 1.4, S.seatMat).position.set(-0.42, 0.82, 0);
-
-  // Steering wheel: tilt → face backwards → spin about its own axis
-  const tilt = new THREE.Group();
-  tilt.position.set(1.38, 0.98, VEHICLE.eye.z);
-  tilt.rotation.z = -0.4;
-  const face = new THREE.Group();
-  face.rotation.y = -Math.PI / 2;
-  const spin = new THREE.Group();
-  tilt.add(face);
-  face.add(spin);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1b1c1f, roughness: 0.7 });
-  spin.add(new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.019, 12, 48), wheelMat));
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.04, 20).rotateX(Math.PI / 2), wheelMat);
-  spin.add(hub);
-  for (const a of [Math.PI / 2 + Math.PI, 0, Math.PI]) {
-    const sp = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.026, 0.014), wheelMat);
-    sp.position.set(Math.cos(a) * 0.095, Math.sin(a) * 0.095, 0);
-    sp.rotation.z = a;
-    spin.add(sp);
-  }
-  // Top marker so the rotation is readable
-  const mark = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.03, 0.045), new THREE.MeshStandardMaterial({ color: 0xbfc5ca }));
-  mark.position.set(0, 0.18, 0);
-  spin.add(mark);
-  const column = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.3, 12).rotateX(Math.PI / 2), wheelMat);
-  column.position.z = -0.17;
-  face.add(column);
-  b.add(tilt);
-  rig.steeringSpin = spin;
-
-  // Central display (canvas texture is assigned by the display module)
-  const dispGroup = new THREE.Group();
-  dispGroup.position.set(1.53, 1.1, 0.02);
-  dispGroup.rotation.y = -Math.PI / 2 - 0.14;
-  const housing = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.215, 0.015), S.trimMat);
-  housing.position.z = -0.009;
-  housing.rotation.x = -0.12;
-  dispGroup.add(housing);
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.2), new THREE.MeshBasicMaterial({ color: 0x050607 }));
-  screen.rotation.x = -0.12;
-  dispGroup.add(screen);
-  b.add(dispGroup);
-  rig.displayMesh = screen;
-
-  // Interior rear-view mirror: flat, on a short stem glued to the top of the windscreen
-  const rm = new THREE.Group();
-  rm.name = 'mirror-rear';
-  rm.position.set(1.4, 1.33, 0);
-  rm.add(new THREE.Mesh(new RoundedBoxGeometry(0.03, 0.07, 0.22, 2, 0.014), S.trimMat));
-  const rmGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.055), new THREE.MeshBasicMaterial({ color: 0x222830 }));
-  rmGlass.name = 'glass';
-  rmGlass.rotation.y = -Math.PI / 2; // faces -X (backwards)
-  rmGlass.position.set(-0.017, 0, 0);
-  rm.add(rmGlass);
-  b.add(rm);
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.05, 6), S.trimMat);
-  stem.position.set(1.41, 1.38, 0);
-  b.add(stem);
-  rig.rearMirror = rm;
 }
 
 /** Pose the rig from the vehicle state (Ackermann on the front wheels). */

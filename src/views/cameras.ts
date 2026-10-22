@@ -8,7 +8,7 @@ export const DEBUG_LAYER = 1;
 export const VIEW_LABELS: Record<ViewName, string> = { driver: 'Posto guida', chase: 'Esterna', top: 'Dall\'alto' };
 const ORDER: ViewName[] = ['driver', 'chase', 'top'];
 
-export const DRIVER_FOV = 78; // vertical, wider than default so both A-pillars and the display fit
+export const DRIVER_FOV = 62; // vertical (~85° horizontal on 16:10): natural, like a driving simulator
 // Looking at a mirror narrows the view, like focusing on it (a monitor has far less resolution than the eye).
 // The right mirror is about twice as far from the eye: narrower, so it looks as large as the left one.
 const GLANCE_FOV = { left: 30, right: 20, rear: 30 } as const;
@@ -54,15 +54,17 @@ export class Views {
     rig.root.add(this.head);
 
     // Head angles that centre each mirror (car body frame; the body has no rotation of its own)
+    rig.root.updateMatrixWorld(true);
     const angles = (g: THREE.Object3D) => {
-      const d = g.position.clone().sub(this.head.position);
+      // Position in the car body frame, whatever the nesting (e.g. the tilted display)
+      const d = rig.body.worldToLocal(g.getWorldPosition(new THREE.Vector3())).sub(this.head.position);
       return { yaw: Math.atan2(-d.z, d.x), pitch: Math.atan2(d.y, Math.hypot(d.x, d.z)) };
     };
     this.glanceAngles = {
       left: angles(rig.mirrors.left),
       right: angles(rig.mirrors.right),
       rear: rig.rearMirror ? angles(rig.rearMirror) : { yaw: -0.6, pitch: 0.1 },
-      display: rig.displayMesh?.parent ? angles(rig.displayMesh.parent) : { yaw: -0.5, pitch: -0.2 },
+      display: rig.displayMesh ? angles(rig.displayMesh) : { yaw: -0.5, pitch: -0.2 },
     };
 
     this.top.up.set(0, 0, -1); // driving direction points right on screen, curb at the bottom
