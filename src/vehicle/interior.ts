@@ -107,16 +107,19 @@ export function buildInterior(rig: CarRig) {
 
   // Centre display on the dashboard, slightly turned towards the driver (canvas texture assigned by the display module)
   const disp = new THREE.Group();
-  disp.position.set(1.42, 0.95, 0.0); // stands out above the dashboard, like a tablet on it
+  // Stands on the dashboard (bottom edge just above it), right of the steering-wheel rim as seen from the eye
+  disp.position.set(1.4, 1.0, 0.08);
   disp.rotation.y = -Math.PI / 2 - 0.12;
   const tilt = new THREE.Group();
   tilt.rotation.x = -0.18; // leaning back, towards the eyes
   disp.add(tilt);
-  const housing = mesh(new RoundedBoxGeometry(0.36, 0.235, 0.03, 3, 0.012), M.dark, tilt, 0, 0, -0.017);
+  const housing = mesh(new RoundedBoxGeometry(0.335, 0.22, 0.03, 3, 0.012), M.dark, tilt, 0, 0, -0.017);
   housing.castShadow = true;
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.2), M.screenOff);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.1875), M.screenOff); // 16:10, like the canvas
   tilt.add(screen);
   b.add(disp);
+  // Foot: the display stands on the dashboard top
+  mesh(new RoundedBoxGeometry(0.08, 0.09, 0.12, 2, 0.02), M.dark, b, 1.47, 0.92, 0.08);
   rig.displayMesh = screen;
 
   // Centre tunnel with armrest and gear selector, between the seats

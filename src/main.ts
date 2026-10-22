@@ -46,7 +46,8 @@ const spaceParam = Number(new URLSearchParams(location.search).get('space'));
 const SPACE_LENGTH = spaceParam >= VEHICLE.length + 0.5 && spaceParam <= VEHICLE.length + 5 ? spaceParam : TARGET_SPACE_LENGTH;
 const street = buildStreet(world, SPACE_LENGTH);
 
-const rig = createCar({ color: 0x4f6d7a, interior: true });
+// Jacopo's mirrors sit higher than on the parked cars: the glass and its light bar stay above the door line
+const rig = createCar({ color: 0x4f6d7a, interior: true, mirrorRaise: 0.06 });
 world.scene.add(rig.root);
 const car = new VehicleState();
 car.reset(START.x, START.z, START.heading);
@@ -56,10 +57,6 @@ const collisions = new Collisions([...street.parkedCars, ...street.oppositeCars]
 // Mirrors: glass aimed from the driver's eye; right one convex (EU passenger side)
 const eyeLocal = new THREE.Vector3(VEHICLE.eye.x, VEHICLE.eye.y, VEHICLE.eye.z);
 const glassOf = (g: THREE.Object3D) => g.getObjectByName('glass') as THREE.Mesh;
-// Jacopo's mirrors sit higher than on the parked cars: the glass and its light bar stay above the door line
-const MIRROR_RAISE = 0.06; // m
-rig.mirrors.left.position.y += MIRROR_RAISE;
-rig.mirrors.right.position.y += MIRROR_RAISE;
 aimMirror(rig.mirrors.left, glassOf(rig.mirrors.left), eyeLocal, new THREE.Vector3(-1, -0.02, -0.06));
 aimMirror(rig.mirrors.right, glassOf(rig.mirrors.right), eyeLocal, new THREE.Vector3(-1, -0.07, 0.05));
 const MIRROR_RES = { high: 1024, low: 512 }; // side mirrors; the rear-view mirror uses half

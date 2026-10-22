@@ -13,6 +13,8 @@ export const DRIVER_FOV = 62; // vertical (~85° horizontal on 16:10): natural, 
 // The right mirror is about twice as far from the eye: narrower, so it looks as large as the left one.
 const GLANCE_FOV = { left: 30, right: 20, rear: 30 } as const;
 const DISPLAY_FOV = 24;
+/** At rest the eyes look slightly right of straight ahead, towards the middle of the windscreen (as from a real seat). */
+const REST_YAW = -0.08; // rad (Views convention: negative = right)
 const MIRROR_FOCUS = 0.06; // rad: fully narrowed this close to a mirror (head-driven view)
 const MIRROR_FOCUS_RANGE = 0.3; // rad: from no narrowing to full narrowing // demo close-up of the central display
 const HEAD_SPEED = 9; // 1/s, head-turn smoothing
@@ -38,7 +40,7 @@ export class Views {
 
   private head = new THREE.Object3D();
   // Mouse-controlled head direction, and the smoothed direction actually shown
-  private yaw = 0;
+  private yaw = REST_YAW;
   private pitch = -0.12;
   private curYaw = 0;
   private curPitch = -0.12;
@@ -83,13 +85,14 @@ export class Views {
       this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * 0.004, -1.0, 0.8);
     });
     dom.addEventListener('dblclick', () => {
-      this.yaw = 0;
+      this.yaw = REST_YAW;
       this.pitch = -0.12;
     });
   }
 
   private updateHead(dt: number) {
-    const target = this.glance ? this.glanceAngles[this.glance] : this.headLook ?? { yaw: this.yaw, pitch: this.pitch };
+    const head = this.headLook && { yaw: this.headLook.yaw + REST_YAW, pitch: this.headLook.pitch };
+    const target = this.glance ? this.glanceAngles[this.glance] : head ?? { yaw: this.yaw, pitch: this.pitch };
     const a = 1 - Math.exp(-dt * (this.headLook && !this.glance ? HEAD_SPEED_TRACKED : HEAD_SPEED));
     this.curYaw += (target.yaw - this.curYaw) * a;
     this.curPitch += (target.pitch - this.curPitch) * a;

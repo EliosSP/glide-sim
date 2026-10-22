@@ -179,7 +179,7 @@ export interface CarRig {
   rearMirror?: THREE.Group; // interior rear-view mirror (Jacopo's car only); no light bar on it
 }
 
-export function createCar(opts: { color: number; interior: boolean; style?: CarStyle }): CarRig {
+export function createCar(opts: { color: number; interior: boolean; style?: CarStyle; mirrorRaise?: number }): CarRig {
   const S = (shared ??= makeShared());
   const style = opts.style ?? 'hatch';
   let G = styleGeo.get(style);
@@ -264,14 +264,34 @@ export function createCar(opts: { color: number; interior: boolean; style?: CarS
     }
   }
 
-  // Mirrors: housing on a stalk, glass facing backwards (texture assigned in milestone 2)
-  const mirrorY = st.glass[3][1] + 0.06;
+  // Mirrors: housing (aimed later towards the driver's eye), glass facing backwards. The arm that carries
+  // it is fixed to the body, from the base of the A-pillar on the door line up to the housing.
+  const belt = st.glass[3][1];
+  const mirrorY = belt + 0.06 + (opts.mirrorRaise ?? 0);
   const mirrors = { left: makeMirror(-1, paintMat, S.trimMat, mirrorY), right: makeMirror(1, paintMat, S.trimMat, mirrorY) };
   body.add(mirrors.left, mirrors.right);
+  for (const s of [-1, 1]) {
+    const foot = new THREE.Vector3(1.78, belt - 0.01, s * 0.86); // on the door, at the base of the A-pillar
+    const top = new THREE.Vector3(1.72, mirrorY - 0.05, s * 0.97); // under the inner end of the housing
+    body.add(arm(foot, top, 0.07, 0.035, S.trimMat));
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.06), S.trimMat);
+    plate.position.set(1.75, belt - 0.005, s * 0.875);
+    body.add(plate);
+  }
 
   const rig: CarRig = { root, body, frontPivots, spinners, mirrors };
   if (opts.interior) buildInterior(rig);
   return rig;
+}
+
+/** Box from a to b (any direction), thickness w × d. */
+function arm(a: THREE.Vector3, b: THREE.Vector3, w: number, d: number, m: THREE.Material) {
+  const dir = b.clone().sub(a);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, dir.length(), d), m);
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  mesh.castShadow = true;
+  return mesh;
 }
 
 function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Material, y: number) {
@@ -282,9 +302,10 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   shell.castShadow = true;
   shell.name = 'shell';
   g.add(shell);
-  const stalk = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, 0.12), trimMat);
-  stalk.position.set(0.0, -0.04, -side * 0.12);
-  g.add(stalk);
+  // Short neck under the inner end of the housing, meeting the arm fixed to the body
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.06), trimMat);
+  neck.position.set(0.01, -0.07, -side * 0.07);
+  g.add(neck);
   const glass = new THREE.Mesh(
     new THREE.PlaneGeometry(0.19, 0.105),
     new THREE.MeshPhysicalMaterial({ color: 0x222830, metalness: 1, roughness: 0.05 }),
