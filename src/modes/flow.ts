@@ -6,7 +6,7 @@ import type { Collisions } from '../vehicle/collision';
 import type { BarView } from '../mirrors/lightBar';
 import { advance, type Pose } from '../planner/geometry';
 import { planParallel, type ParkPlan } from '../planner/parallelPlanner';
-import { AssistedManeuver, DEFAULT_ASSIST, type AssistEvent, type AssistedPhase } from './assisted';
+import { AssistedManeuver, type AssistEvent, type AssistParams, type AssistedPhase } from './assisted';
 import type { DriveInput } from '../vehicle/kinematics';
 import {
   AutoRun, AutoTimeline, autoBars, buildTimeline, clearanceLabel, previewOf,
@@ -77,6 +77,7 @@ export interface FlowSettings {
   curbPoorlyVisible: boolean; // scenario: sensors unsure about the curb
   speedProfile: SpeedProfile; // autonomous: fluid (default) / abrupt
   autoLead: number; // s, autonomous feedforward on the mirror bar
+  assist: AssistParams; // notch tolerance, pre-announcement, segments (live from the panel)
 }
 
 type StopReason = 'driver' | 'confidence' | 'obstacle';
@@ -246,7 +247,7 @@ export class GlideFlow {
   }
 
   private startAssisted(plan: ParkPlan, car: VehicleState, now: number, from: 'positioning' | 'steer1' | 'steer2') {
-    this.maneuver = new AssistedManeuver(plan, this.collisions, DEFAULT_ASSIST, (e) => this.emit(e), now);
+    this.maneuver = new AssistedManeuver(plan, this.collisions, this.settings.assist, (e) => this.emit(e), now);
     if (from !== 'positioning') this.maneuver.startFrom(from, { x: car.x, z: car.z, heading: car.heading }, now);
     this.auto = null;
     this.screen = 'assisted';
@@ -571,7 +572,7 @@ export class GlideFlow {
       if (Math.hypot(car.x - this.stopPose.x, car.z - this.stopPose.z) > 0.3) this.toManual(now);
     }
     if (this.screen === 'autoRunning' && this.auto && !this.braking) {
-      bars = autoBars(this.auto.timeline, this.auto.t, { lead: this.settings.autoLead, announceLead: DEFAULT_ASSIST.announceLead, segments: DEFAULT_ASSIST.segments });
+      bars = autoBars(this.auto.timeline, this.auto.t, { lead: this.settings.autoLead, announceLead: this.settings.assist.announceLead, segments: this.settings.assist.segments });
     }
 
     if (this.screen === 'done' && car.gear === 'D' && car.speed > 1) {

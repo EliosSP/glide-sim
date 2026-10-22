@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
 import { PHYSICS_DT, ROAD, START, TARGET_SPACE_LENGTH, VEHICLE } from './config';
+import { DEFAULT_ASSIST } from './modes/assisted';
+import { DEFAULT_BAR_STYLE, type BarStyle } from './mirrors/lightBar';
 import { World, type Quality, type TimeOfDay } from './scene/world';
 import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
@@ -18,6 +20,8 @@ import { GlideFlow, type FlowEvent } from './modes/flow';
 import { GlideAudio } from './audio/sounds';
 import { DemoDirector } from './modes/demo';
 import { Subtitles, TrialIndicator } from './ui/overlay';
+import { Logger, download } from './ui/logger';
+import { bodyToCurb } from './vehicle/collision';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
@@ -32,7 +36,10 @@ const nowS = () => simTime;
 
 const app = document.getElementById('app')!;
 const world = new World(app);
-const street = buildStreet(world, TARGET_SPACE_LENGTH);
+// Target space length: ?space=<metres> (the street is built once, so it changes with a reload)
+const spaceParam = Number(new URLSearchParams(location.search).get('space'));
+const SPACE_LENGTH = spaceParam >= VEHICLE.length + 0.5 && spaceParam <= VEHICLE.length + 5 ? spaceParam : TARGET_SPACE_LENGTH;
+const street = buildStreet(world, SPACE_LENGTH);
 
 const rig = createCar({ color: 0x4f6d7a, interior: true });
 world.scene.add(rig.root);
@@ -63,6 +70,12 @@ const bars = {
   left: new LightBar(0.18, 0.014, false),
   right: new LightBar(0.18, 0.014, true),
 };
+// Bar look, edited live from the panel; turquoise variant for the autonomous mode
+const barStyle: BarStyle = { ...DEFAULT_BAR_STYLE };
+const barLook = { turquoiseAuto: false, grayscale: false };
+const TURQUOISE = '#5fe8dc';
+const autoBarStyle: BarStyle = { ...barStyle, color: TURQUOISE };
+const AUTO_SCREENS = new Set(['autoRunning', 'autoReplan', 'autoStopped']);
 rig.mirrors.left.getObjectByName('bar-mount')!.add(bars.left.mesh);
 rig.mirrors.right.getObjectByName('bar-mount')!.add(bars.right.mesh);
 
@@ -72,8 +85,10 @@ const flowSettings = {
   curbPoorlyVisible: false,
   speedProfile: 'fluid' as 'fluid' | 'abrupt',
   autoLead: 1.0,
+  assist: { ...DEFAULT_ASSIST },
 };
 const audio = new GlideAudio();
+const logger = new Logger();
 const flow = new GlideFlow(street.spaces, collisions, flowSettings, onFlowEvent, START.z);
 
 // --- other actors (scenario "Vuoto" / "Animato") ---
@@ -85,9 +100,10 @@ actors.onHazard = (e) => {
   flow.onHazard(e);
 };
 
-/** Sounds: only short confirmations, plus the actors that react to Glide. */
+/** Sounds (only short confirmations), the actors that react to Glide, and the test log. */
 function onFlowEvent(e: FlowEvent) {
   console.debug('[glide]', e);
+  logFlowEvent(e);
   switch (e.type) {
     case 'confirm':
     case 'pointReached':
@@ -106,6 +122,40 @@ function onFlowEvent(e: FlowEvent) {
     case 'phase':
       if (e.phase === 'done') audio.end();
       break;
+  }
+}
+
+/** Flow events → rows of the test log (names as in the spec). */
+function logFlowEvent(e: FlowEvent) {
+  const now = nowS();
+  const phase = flow.maneuver?.phase ?? flow.screen;
+  const L = (event: string, f: Parameters<Logger['log']>[2] = {}) => logger.log(now, event, { phase, ...f });
+  switch (e.type) {
+    case 'parkButton': return L('park_button');
+    case 'parkActive': return L('park_active', { extra: { recommended: flow.recommendation?.mode, reason: flow.recommendation?.reason } });
+    case 'modeChosen': return L('mode_chosen', { value: e.mode });
+    case 'phase':
+      if (e.phase !== 'done') return L('phase', { phase: e.phase, value: e.phase });
+      return; // logged with its result in the frame loop
+    case 'confirm': return L('confirm', { side: e.side });
+    case 'pointReached': return L('point_reached', { side: e.side });
+    case 'over': return L('over', { value: e.what });
+    case 'steerError': return L('steer_error', { phase: e.phase, value: e.error });
+    case 'autoStart': return L('auto_start');
+    case 'takeover': return L('takeover');
+    case 'lowConfidence': return L('low_confidence');
+    case 'trajectoryChange': return L('trajectory_change');
+    case 'switchToAssisted': return L('switch_to_assisted', { value: e.from });
+    case 'manual': return L('manual');
+    case 'cancel':
+      logger.setOutcome('cancel');
+      return L('cancel', { value: e.from });
+    case 'autoDone': {
+      const pose = { x: car.x, z: car.z, heading: car.heading };
+      const g = collisions.frontRearGaps(pose);
+      logger.setOutcome('done');
+      return L('auto_done', { value: e.seconds, extra: { minClearance: e.minClearance, curbGap: bodyToCurb(pose), frontGap: g.front, rearGap: g.rear } });
+    }
   }
 }
 
@@ -182,6 +232,86 @@ actorsFolder.add(actorSettings, 'cyclist').name('Ciclista (controsterzo)').onCha
 actorsFolder.add(actorSettings, 'traffic').name('Traffico corsia opposta').onChange(() => actors.applySettings());
 actorsFolder.add(actorSettings, 'hazard').name('Pericolo (hook onHazard)');
 soundFolder.add(audio, 'volume', 0, 1, 0.05).name('Volume');
+
+// Mirror bar and assisted grammar: all live, the next frame uses the new values
+const barFolder = gui.addFolder('Barra luminosa');
+barFolder.add(flowSettings.assist, 'notchTol', 0.05, 0.1, 0.005).name('Tolleranza tacca (± escursione)');
+barFolder.add(flowSettings.assist, 'announceLead', 1.0, 2.5, 0.05).name('Anticipo preannuncio (s)');
+barFolder.add(flowSettings.assist, 'segments', 4, 12, 1).name('Segmenti countdown');
+barFolder.add(barStyle, 'blinkCount', 1, 4, 1).name('Lampeggi di conferma');
+barFolder.add(barStyle, 'blinkOn', 0.05, 0.4, 0.01).name('Lampeggio acceso (s)');
+barFolder.add(barStyle, 'blinkOff', 0.05, 0.4, 0.01).name('Lampeggio spento (s)');
+let lastBarColor = barStyle.color;
+const colorCtrl = barFolder.addColor(barStyle, 'color').name('Colore barra').onChange((c: string) => {
+  // The light must never look like a turn signal
+  if (isOrange(c)) {
+    barStyle.color = lastBarColor;
+    colorCtrl.updateDisplay();
+    colorCtrl.name('Colore barra (arancione non ammesso)');
+    setTimeout(() => colorCtrl.name('Colore barra'), 2500);
+  } else {
+    lastBarColor = c;
+  }
+});
+barFolder.add(barStyle, 'brightness', 0.3, 1.5, 0.05).name('Luminosità barra');
+barFolder.add(barLook, 'turquoiseAuto').name('Turchese in autonomo');
+barFolder.add(barLook, 'grayscale').name('Scala di grigi').onChange((g: boolean) => {
+  world.renderer.domElement.style.filter = g ? 'grayscale(1)' : '';
+});
+
+function isOrange(hex: string) {
+  const hsl = new THREE.Color(hex).getHSL({ h: 0, s: 0, l: 0 });
+  const h = hsl.h * 360;
+  return h >= 12 && h <= 52 && hsl.s > 0.35 && hsl.l > 0.2 && hsl.l < 0.9;
+}
+
+// Target space length: the street is rebuilt with a reload (?space=)
+const spaceFolder = gui.addFolder('Spazio target');
+const space = { length: SPACE_LENGTH };
+spaceFolder.add(space, 'length', VEHICLE.length + 0.5, VEHICLE.length + 5, 0.1).name('Lunghezza (m)');
+spaceFolder.add({ apply: () => reloadWith({ space: space.length.toFixed(2) }) }, 'apply').name('Applica (ricarica la pagina)');
+
+function reloadWith(p: Record<string, string>) {
+  const q = new URLSearchParams(location.search);
+  for (const [k, v] of Object.entries(p)) q.set(k, v);
+  location.search = q.toString();
+}
+
+// Presets: every panel value in a JSON file, so each test session starts identical
+const presetFolder = gui.addFolder('Preset');
+presetFolder.add({ save: () => savePreset() }, 'save').name('Salva preset (JSON)');
+presetFolder.add({ load: () => presetInput.click() }, 'load').name('Carica preset…');
+const presetInput = Object.assign(document.createElement('input'), { type: 'file', accept: 'application/json,.json' });
+presetInput.addEventListener('change', async () => {
+  const f = presetInput.files?.[0];
+  presetInput.value = '';
+  if (!f) return;
+  try {
+    const p = JSON.parse(await f.text());
+    gui.load(p.panel);
+    if (p.panel?.folders?.['Spazio target'] && Math.abs(space.length - SPACE_LENGTH) > 0.01) {
+      flow.notice('Preset caricato: per la lunghezza dello spazio premi "Applica"', nowS());
+    } else {
+      flow.notice('Preset caricato', nowS());
+    }
+  } catch (err) {
+    console.warn('Preset non valido', err);
+    flow.notice('Preset non valido', nowS());
+  }
+});
+
+function savePreset() {
+  const panel = gui.save() as { folders: Record<string, unknown> };
+  // Participant, trial and demo are not part of a test condition
+  delete panel.folders['Sessione di test'];
+  delete panel.folders['Demo'];
+  const d = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, panel }, null, 2)], { type: 'application/json' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `glide_preset_${d}.json` });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)');
 
 function setScenario(sc: Scenario) {
@@ -206,9 +336,55 @@ const session = { participant: '', trial: 1, testMode: false, indicator: true };
 const indicator = new TrialIndicator();
 const sessionFolder = gui.addFolder('Sessione di test');
 sessionFolder.add(session, 'testMode').name('Modalità test').onChange((on: boolean) => setTestMode(on));
-sessionFolder.add(session, 'participant').name('ID partecipante').onChange(() => updateIndicator());
+sessionFolder.add(session, 'participant').name('ID partecipante').onChange(() => {
+  logger.setParticipant(session.participant);
+  updateIndicator();
+});
 sessionFolder.add(session, 'trial').name('Prova n.').listen().disable();
 sessionFolder.add(session, 'indicator').name('Indicatore (I)').onChange(() => updateIndicator());
+const logState = { active: true };
+sessionFolder.add(logState, 'active').name('Log attivo').onChange(() => updateLogEnabled());
+sessionFolder.add({ exportCsv: () => exportLog() }, 'exportCsv').name('Esporta CSV (L)');
+sessionFolder.add({ newSession: () => newSession() }, 'newSession').name('Nuova sessione…');
+
+function updateLogEnabled() {
+  logger.enabled = logState.active && !demo.active;
+}
+
+function exportLog() {
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const base = `glide_${(session.participant || 'anonimo').replace(/[^\w-]+/g, '_')}_${day}`;
+  download(`${base}_events.csv`, logger.eventsCsv());
+  download(`${base}_summary.csv`, logger.summaryCsv(nowS()));
+}
+
+function newSession() {
+  if (!confirm(`Nuova sessione: il log in memoria (${logger.eventCount} eventi) verrà cancellato. Hai già esportato i CSV?`)) return;
+  logger.newSession();
+  session.trial = 1;
+  logger.startTrial(session.trial, session.participant, nowS(), trialParams());
+  updateIndicator();
+}
+
+/** Every active parameter, stored with each trial. */
+function trialParams() {
+  return {
+    scenario: actorSettings.scenario,
+    actors: { ...actorSettings },
+    speedProfile: flowSettings.speedProfile,
+    autoLead: flowSettings.autoLead,
+    cameraWhileMoving: flowSettings.cameraWhileMoving,
+    curbPoorlyVisible: flowSettings.curbPoorlyVisible,
+    assist: { ...flowSettings.assist },
+    bar: { ...barStyle, ...barLook },
+    spaceLength: SPACE_LENGTH,
+    time: params.time,
+    quality: params.quality,
+    volume: audio.volume,
+    testMode: session.testMode,
+  };
+}
 
 function updateIndicator() {
   indicator.set(session.participant, session.trial);
@@ -275,6 +451,7 @@ function toggleDemo() {
     demo.stop();
     keys.allow = null;
     hud.setVisible(hudBeforeDemo && !session.testMode);
+    updateLogEnabled();
     resetAll();
   } else {
     hudBeforeDemo = hud.visible;
@@ -282,7 +459,9 @@ function toggleDemo() {
     gui.show((guiVisible = false));
     debug.showPath = false;
     keys.allow = new Set(['Digit0', 'Escape', 'KeyF']);
+    logger.endTrial(nowS(), 'reset');
     demo.start();
+    updateLogEnabled();
   }
   demoGlance = null;
   views.glanceZoom = null;
@@ -314,8 +493,15 @@ keys.on('KeyD', () => (gearMsg = car.setGear('D') ? '' : 'Fermati per inserire l
 keys.on('KeyC', () => views.cycle());
 keys.on('KeyV', () => (views.split = !views.split));
 keys.on('KeyH', () => hud.toggle());
-keys.on('KeyE', () => flow.onBlinker('right', car, nowS()));
-keys.on('KeyQ', () => flow.onBlinker('left', car, nowS()));
+keys.on('KeyE', () => blinker('right'));
+keys.on('KeyQ', () => blinker('left'));
+keys.on('KeyL', () => exportLog());
+
+function blinker(side: 'left' | 'right') {
+  flow.onBlinker(side, car, nowS());
+  const ev = flow.evaluation;
+  if (ev) logger.log(nowS(), 'space_evaluated', { phase: flow.screen, side, value: ev.fits ? 'fits' : 'no_fit', extra: { space: ev.space.id, title: ev.title, line: ev.line } });
+}
 keys.on('KeyP', () => flow.onParkButton(car, nowS(), contacts));
 keys.on('Digit1', () => flow.onModeChosen('assisted', car, nowS()));
 keys.on('Digit2', () => flow.onModeChosen('auto', car, nowS()));
@@ -340,7 +526,12 @@ keys.on('KeyI', () => {
 
 /** Back to the start of the street; every reset is a new trial. */
 function resetAll(x: number = START.x) {
-  session.trial++;
+  // Every reset outside the demo closes the trial and starts a new one
+  if (!demo.active) {
+    logger.endTrial(nowS(), 'reset');
+    session.trial++;
+    logger.startTrial(session.trial, session.participant, nowS(), trialParams());
+  }
   updateIndicator();
   car.reset(x, START.z, START.heading);
   views.resetChase();
@@ -382,7 +573,10 @@ function removeObstacle() {
 
 window.addEventListener('resize', () => layout());
 layout();
-session.trial = 1;
+// The log survives a reload: trial numbers continue in the same session
+session.trial = logger.lastTrial + 1;
+session.participant = logger.lastParticipant;
+logger.startTrial(session.trial, session.participant, nowS(), trialParams());
 if (URL_PARAMS.get('test') === '1') setTestMode(true);
 else updateIndicator();
 // The demo starts once the environment has had a moment to load
@@ -420,7 +614,10 @@ function physicsStep(input: DriveInput, now: number) {
   if (hit && !wasHit) {
     car.restore(before);
     if (control === 'auto') flow.autoHalt(car);
-    if (!inContact) contacts++;
+    if (!inContact) {
+      contacts++;
+      logger.log(now, 'contact', { phase: flow.maneuver?.phase ?? flow.screen, value: hit });
+    }
     inContact = hit;
     contactAt = { x: car.x, z: car.z };
   } else if (inContact && Math.hypot(car.x - contactAt.x, car.z - contactAt.z) > CONTACT_RELEASE) {
@@ -455,8 +652,12 @@ function frame(time: number) {
   recon.syncActors(actors.markers());
   parkingSensors(now);
   const out = flow.update(car, now, contacts);
+  const auto = barLook.turquoiseAuto && AUTO_SCREENS.has(flow.screen);
+  if (auto) Object.assign(autoBarStyle, barStyle, { color: TURQUOISE });
+  bars.left.painter.style = bars.right.painter.style = auto ? autoBarStyle : barStyle;
   bars.left.draw(out.bars.left, now);
   bars.right.draw(out.bars.right, now);
+  logFrame(now);
   lastBarViews = out.bars;
   showPath(flow.maneuver?.plan ?? null);
 
@@ -520,6 +721,33 @@ function parkingSensors(now: number) {
   if (!n) return;
   const lateral = -(n.point[0] - car.x) * Math.sin(car.heading) + (n.point[1] - car.z) * Math.cos(car.heading);
   audio.sensors(n.distance, lateral > 0.3 ? 'right' : lateral < -0.3 ? 'left' : null, now);
+}
+
+// Log of what is not a flow event: screens reached, end of the assisted manoeuvre, mirror glances
+let loggedScreen = flow.screen;
+let loggedDone = false;
+let loggedGlance: Glance = null;
+let glanceStart = 0;
+function logFrame(now: number) {
+  if (flow.screen !== loggedScreen) {
+    loggedScreen = flow.screen;
+    if (flow.screen === 'approach') logger.log(now, 'approach', { phase: 'approach' });
+    if (flow.screen === 'autoPreview') logger.log(now, 'preview_shown', { phase: 'autoPreview', value: flow.auto?.preview.seconds ?? '' });
+  }
+  const r = flow.maneuver?.result;
+  if (r && !loggedDone) {
+    loggedDone = true;
+    logger.setOutcome('done');
+    logger.log(now, 'done', { phase: 'done', value: r.seconds, extra: { curbGap: r.curbGap, frontGap: r.frontGap, rearGap: r.rearGap, overs: r.overs } });
+  } else if (!r) loggedDone = false;
+  // Z/X/W: start and end of each look at a mirror (a proxy of the gaze, which is filmed separately)
+  const g = demo.active ? null : views.glance;
+  if (g !== loggedGlance) {
+    if (loggedGlance) logger.log(now, 'glance', { phase: flow.maneuver?.phase ?? flow.screen, side: loggedGlance, value: 'end', extra: { s: Math.round((now - glanceStart) * 100) / 100 } });
+    if (g) logger.log(now, 'glance', { phase: flow.maneuver?.phase ?? flow.screen, side: g, value: 'start' });
+    loggedGlance = g;
+    glanceStart = now;
+  }
 }
 
 function assistHud(): string[] {
@@ -593,5 +821,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { actors, audio, actorSettings, debug, gui, demo, demoSettings, session, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);
