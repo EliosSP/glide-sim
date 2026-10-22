@@ -1,6 +1,6 @@
 import { ROAD, VEHICLE } from '../config';
 import type { ParkedCar } from '../scene/parkingLayout';
-import { footprint, polygonDistance, polygonsOverlap, rectPolygon, type Polygon, type Pose } from '../planner/geometry';
+import { footprint, pointPolygonDistance, polygonDistance, polygonsOverlap, rectPolygon, type Polygon, type Pose } from '../planner/geometry';
 
 export type ContactKind = 'auto' | 'cordolo';
 
@@ -12,13 +12,55 @@ const TYRE_HALF_WIDTH = VEHICLE.wheelWidth / 2;
 interface Obstacle {
   x: number;
   poly: Polygon;
+  kind: 'car' | 'object';
+  id?: string;
+}
+
+export interface NearestObstacle {
+  distance: number;
+  kind: 'car' | 'object';
+  behind: boolean; // obstacle centre behind the car centre
+  point: [number, number]; // body corner closest to it
 }
 
 export class Collisions {
   private obstacles: Obstacle[];
 
   constructor(cars: ParkedCar[]) {
-    this.obstacles = cars.map((c) => ({ x: c.x, poly: rectPolygon(c.x, c.z, c.length / 2, PARKED_HALF_WIDTH) }));
+    this.obstacles = cars.map((c) => ({ x: c.x, poly: rectPolygon(c.x, c.z, c.length / 2, PARKED_HALF_WIDTH), kind: 'car' as const }));
+  }
+
+  /** Temporary obstacle (e.g. an object that appears during a manoeuvre). */
+  addObject(id: string, x: number, z: number, halfLen: number, halfWidth: number) {
+    this.removeObject(id);
+    this.obstacles.push({ x, poly: rectPolygon(x, z, halfLen, halfWidth), kind: 'object', id });
+  }
+
+  removeObject(id: string) {
+    this.obstacles = this.obstacles.filter((o) => o.id !== id);
+  }
+
+  /** Closest obstacle to the body, with the body corner nearest to it. */
+  nearest(pose: Pose): NearestObstacle | null {
+    const body = footprint(pose);
+    const centre = pose.x + Math.cos(pose.heading) * 1.35;
+    let best: NearestObstacle | null = null;
+    for (const o of this.obstacles) {
+      if (Math.abs(o.x - pose.x) > 9) continue;
+      const d = polygonDistance(body, o.poly);
+      if (best && d >= best.distance) continue;
+      let corner = body[0];
+      let cd = Infinity;
+      for (const v of body) {
+        const vd = pointPolygonDistance(v[0], v[1], o.poly);
+        if (vd < cd) {
+          cd = vd;
+          corner = v;
+        }
+      }
+      best = { distance: d, kind: o.kind, behind: o.x < centre, point: corner };
+    }
+    return best;
   }
 
   /** Returns the first contact for a vehicle pose, or null. */

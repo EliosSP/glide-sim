@@ -3,6 +3,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { ROAD, VEHICLE } from '../config';
 import type { FreeSpace, ParkedCar } from '../scene/parkingLayout';
 import type { Pose } from '../planner/geometry';
+import type { ReconInfo } from '../modes/flow';
+import type { AutoTimeline } from '../modes/autonomous';
 
 export type SpaceLook = 'fits' | 'noFit' | 'chosen' | 'chosenNoFit';
 
@@ -24,7 +26,17 @@ export class ReconView {
   private ego: THREE.Mesh;
   private spaceMeshes = new Map<string, { mesh: THREE.Mesh; outline: THREE.LineSegments }>();
   private camPos = new THREE.Vector3();
+  private camTarget = new THREE.Vector3();
   private camInit = false;
+
+  // Autonomous preview: trajectory ribbon (consumed as the car drives it), fastest stretch, critical points, ghost
+  private previewGroup = new THREE.Group();
+  private ribbon: THREE.Mesh;
+  private fastRibbon: THREE.Mesh;
+  private rings: THREE.Mesh[] = [];
+  private ghost: THREE.Mesh;
+  private shownPreview: ReconInfo['preview'] | null = null;
+  private objects = new Map<string, THREE.Object3D>();
 
   constructor(cars: ParkedCar[], opposite: ParkedCar[], spaces: FreeSpace[], width: number, height: number) {
     this.target = new THREE.WebGLRenderTarget(width, height, { samples: 4 });
@@ -87,6 +99,94 @@ export class ReconView {
       new THREE.MeshStandardMaterial({ color: 0xf2f5f7, roughness: 0.4 }),
     );
     this.scene.add(this.ego);
+
+    const ribbonMat = (color: number, opacity: number) =>
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
+    this.ribbon = new THREE.Mesh(new THREE.BufferGeometry(), ribbonMat(0x7cc4ff, 0.55));
+    this.fastRibbon = new THREE.Mesh(new THREE.BufferGeometry(), ribbonMat(0xffffff, 0.9));
+    this.ribbon.renderOrder = 1;
+    this.fastRibbon.renderOrder = 2;
+    this.ghost = new THREE.Mesh(
+      new RoundedBoxGeometry(VEHICLE.length, 1.45, VEHICLE.width, 3, 0.35),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false }),
+    );
+    this.previewGroup.add(this.ribbon, this.fastRibbon, this.ghost);
+    this.previewGroup.visible = false;
+    this.scene.add(this.previewGroup);
+  }
+
+  /** Small object on the road (e.g. the obstacle of scenario I3). */
+  setObject(id: string, pos: { x: number; z: number } | null) {
+    const old = this.objects.get(id);
+    if (old) this.scene.remove(old);
+    this.objects.delete(id);
+    if (!pos) return;
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.0, 20), new THREE.MeshStandardMaterial({ color: 0xc9d1d9 }));
+    m.position.set(pos.x, 0.5, pos.z);
+    this.scene.add(m);
+    this.objects.set(id, m);
+  }
+
+  /** World point → pixel in the rendered image (for labels drawn on top). */
+  project(p: THREE.Vector3, w: number, h: number): [number, number] | null {
+    const v = p.clone().project(this.camera);
+    if (v.z < -1 || v.z > 1) return null;
+    return [((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h];
+  }
+
+  private buildRibbon(mesh: THREE.Mesh, pts: THREE.Vector3[], width: number, y: number) {
+    const pos: number[] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const l = Math.hypot(dx, dz) || 1;
+      const nx = (-dz / l) * (width / 2);
+      const nz = (dx / l) * (width / 2);
+      pos.push(a.x + nx, y, a.z + nz, a.x - nx, y, a.z - nz, b.x + nx, y, b.z + nz);
+      pos.push(b.x + nx, y, b.z + nz, a.x - nx, y, a.z - nz, b.x - nx, y, b.z - nz);
+    }
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.BufferGeometry();
+    mesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  }
+
+  private showPreview(info: ReconInfo | null, timeline: AutoTimeline | null) {
+    this.previewGroup.visible = !!info;
+    if (!info) {
+      this.shownPreview = null;
+      return;
+    }
+    const p = info.preview;
+    if (p !== this.shownPreview) {
+      this.shownPreview = p;
+      this.buildRibbon(this.ribbon, p.path, 0.8, 0.04);
+      const fastPts = p.fast ? p.path.filter((_, i) => p.pathTimes[i] >= p.fast!.from && p.pathTimes[i] <= p.fast!.to) : [];
+      this.buildRibbon(this.fastRibbon, fastPts, 1.0, 0.05);
+      for (const r of this.rings) this.previewGroup.remove(r);
+      this.rings = p.points.map((cp) => {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.32, 0.46, 32),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false }),
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.copy(cp.position).setY(0.08);
+        ring.renderOrder = 3;
+        this.previewGroup.add(ring);
+        return ring;
+      });
+    }
+    // The trajectory is "consumed" as the car drives it
+    const consumed = p.pathTimes.findIndex((t) => t >= info.progressT);
+    this.ribbon.geometry.setDrawRange(Math.max(0, consumed) * 6, Infinity);
+    this.ghost.visible = info.ghostT !== null && !!timeline;
+    if (this.ghost.visible && timeline) {
+      const g = timeline.sample(info.ghostT!).pose;
+      const c = (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;
+      this.ghost.position.set(g.x + Math.cos(g.heading) * c, 0.74, g.z + Math.sin(g.heading) * c);
+      this.ghost.rotation.y = -g.heading;
+    }
   }
 
   setSpaceLook(id: string, look: SpaceLook) {
@@ -96,7 +196,8 @@ export class ReconView {
     s.outline.visible = look === 'chosen' || look === 'chosenNoFit';
   }
 
-  render(renderer: THREE.WebGLRenderer, pose: Pose, dt: number) {
+  render(renderer: THREE.WebGLRenderer, pose: Pose, dt: number, auto: ReconInfo | null = null, timeline: AutoTimeline | null = null) {
+    this.showPreview(auto, timeline);
     const c = Math.cos(pose.heading);
     const s = Math.sin(pose.heading);
     const centre = (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;
@@ -105,15 +206,32 @@ export class ReconView {
     this.ego.position.set(cx, 0.72, cz);
     this.ego.rotation.y = -pose.heading;
 
-    // Behind and above, following along the street only (calmer than following the heading)
-    const target = new THREE.Vector3(cx - 9, 12, cz - 3.5);
+    // Approach: behind and above, following along the street only (calmer than following the heading).
+    // Autonomous: higher overview centred on the whole trajectory.
+    let target: THREE.Vector3;
+    let look: THREE.Vector3;
+    if (auto) {
+      // Frame the whole trajectory: nearly top-down, height from its length
+      const xs = auto.preview.path.map((v) => v.x);
+      const mid = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const span = Math.max(10, Math.max(...xs) - Math.min(...xs) + 6);
+      const h = span * 1.25;
+      target = new THREE.Vector3(mid - 1.5, h, ROAD.curbZ - 2.2 - h * 0.28);
+      look = new THREE.Vector3(mid, 0, ROAD.curbZ - 2.2);
+    } else {
+      target = new THREE.Vector3(cx - 9, 12, cz - 3.5);
+      look = new THREE.Vector3(cx, 0, ROAD.curbZ - 2.6);
+    }
     if (!this.camInit) {
       this.camPos.copy(target);
+      this.camTarget.copy(look);
       this.camInit = true;
     }
-    this.camPos.lerp(target, 1 - Math.exp(-dt * 3));
+    const a = 1 - Math.exp(-dt * 3);
+    this.camPos.lerp(target, a);
+    this.camTarget.lerp(look, a);
     this.camera.position.copy(this.camPos);
-    this.camera.lookAt(this.camPos.x + 9, 0, ROAD.curbZ - 2.6);
+    this.camera.lookAt(this.camTarget);
 
     const prev = renderer.getRenderTarget();
     const prevTone = renderer.toneMapping;

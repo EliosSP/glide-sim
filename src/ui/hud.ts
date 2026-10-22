@@ -1,6 +1,7 @@
 const HELP =
   '↑/↓ acceleratore/freno · ←/→ volante · R retro · D marcia · Spazio freno forte · ' +
   'Z/X (tieni premuto) guarda specchietto sx/dx · Q/E freccia sx/dx · P Park Assist · 1/2 assistito/autonomo · ' +
+  "Invio avvia · A passa all'assistito · M finisco a mano · " +
   'C cambia vista · V split · ' +
   'trascina: gira la testa (doppio clic: centra) · H nasconde · F1 parametri · Esc reset';
 

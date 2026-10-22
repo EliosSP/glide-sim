@@ -77,6 +77,16 @@ export class AssistedManeuver {
     emit({ type: 'phase', phase: this.phase, t: now });
   }
 
+  /**
+   * Hand-over from the autonomous mode: continue from the current pose at a given step
+   * (the car is stopped; "steer2" recomputes the counter-steer from where it is).
+   */
+  startFrom(phase: 'positioning' | 'steer1' | 'steer2', pose: Pose, now: number) {
+    if (phase === 'steer2') this.steer2Target = chooseCounterSteer(pose, this.collisions) / MAX_STEER;
+    this.needRange = phase === 'positioning';
+    this.go(phase, now);
+  }
+
   private go(phase: AssistedPhase, now: number) {
     this.phase = phase;
     this.reachedAt = null;
@@ -115,7 +125,8 @@ export class AssistedManeuver {
         this.instruction = view.kind === 'steer' && view.inTarget ? 'Giusto: inizia la retro' : 'Gira il volante a destra fino alla tacca';
         if (car.speed < -0.05) {
           this.recordSteerError(fillRight - target, now);
-          this.range = Math.max(0.5, this.plan.arc1);
+          const k1 = car.steer > 0.02 ? kappaOf(car.steer) : kappaOf(this.plan.steer1);
+          this.range = Math.max(0.5, solveSwitch(pose, k1, kappaOf(this.plan.steer2), finalZ()).remaining);
           this.go('reverse1', now);
         } else if (car.speed > 0.05) {
           this.needRange = true;

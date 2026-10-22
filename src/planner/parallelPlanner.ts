@@ -106,8 +106,10 @@ export function planParallel(space: FreeSpace, collisions: Collisions, startZ: n
   const zf = finalZ();
   const centreOffset = (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;
   const centreX = (space.xStart + space.xEnd) / 2 - centreOffset;
-  // Final rear-axle x: from close to the car behind (as a driver would) up to centred
+  // Final rear-axle x: anywhere from close to the car behind...
   const rearMost = space.xStart + MIN_REAR_GAP + VEHICLE.rearOverhang;
+  // ...up to close to the car in front (needed when something occupies the back of the space)
+  const frontMost = space.xEnd - MIN_REAR_GAP - VEHICLE.wheelbase - VEHICLE.frontOverhang;
   const fractions = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0];
   let best: { plan: ParkPlan; score: number } | null = null;
 
@@ -119,7 +121,7 @@ export function planParallel(space: FreeSpace, collisions: Collisions, startZ: n
       if (Math.abs(rel.final.z - zf) > 0.02 || rel.remaining <= 0) continue;
       const arc1 = rel.remaining;
       const arc2 = Math.abs(rel.switchPose.heading / k2);
-      for (let fx = rearMost; fx <= Math.max(rearMost, centreX) + 1e-6; fx += 0.1) {
+      for (let fx = rearMost; fx <= Math.max(rearMost, frontMost) + 1e-6; fx += 0.1) {
         const off = fx - centreX;
         const start: Pose = { x: fx - rel.final.x, z: startZ, heading: 0 };
         const path = samplePath(start, k1, arc1, k2, arc2);

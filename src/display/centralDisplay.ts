@@ -2,6 +2,13 @@ import * as THREE from 'three';
 import type { CameraGuide, DisplayModel } from '../modes/flow';
 import { BarPainter } from '../mirrors/lightBar';
 import type { RearCamera } from './rearCamera';
+import type { ReconView } from './recon';
+
+/** Text pinned to a point of the reconstruction (critical points of the autonomous preview). */
+export interface ReconLabel {
+  position: THREE.Vector3;
+  text: string;
+}
 
 const W = 1024;
 const H = 640;
@@ -70,12 +77,13 @@ export class CentralDisplay {
   /** Which picture the viewport needs this frame (so main renders only what is shown). */
   static viewportFor(m: DisplayModel): 'recon' | 'camera' | null {
     const s = m.screen;
-    if (s.kind === 'approach') return 'recon';
+    if (s.kind === 'approach' || s.kind === 'autoPreview' || s.kind === 'autoRunning' || s.kind === 'autoStopped') return 'recon';
     if (s.kind === 'inside' || (s.kind === 'assisted' && s.camera)) return 'camera';
     return null;
   }
 
-  update(m: DisplayModel, now: number, recon: THREE.Texture, cam: RearCamera, guide: CameraGuide | null) {
+  update(m: DisplayModel, now: number, reconView: ReconView, cam: RearCamera, guide: CameraGuide | null, labels: ReconLabel[] = []) {
+    const recon = reconView.target.texture;
     const vp = CentralDisplay.viewportFor(m);
     this.viewport.visible = vp !== null;
     if (vp) {
@@ -88,8 +96,9 @@ export class CentralDisplay {
         mat.needsUpdate = true;
       }
     }
-    this.overlay.visible = vp === 'camera';
+    this.overlay.visible = vp === 'camera' || (vp === 'recon' && labels.length > 0);
     if (vp === 'camera') this.drawOverlay(cam, guide, now);
+    else if (this.overlay.visible) this.drawLabels(reconView, labels);
 
     const blinkOn = Math.floor(now * 3) % 2 === 0;
     const key = JSON.stringify({ ...m, speedKmh: Math.round(m.speedKmh) }) + (m.blinker ? blinkOn : '');
@@ -148,6 +157,33 @@ export class CentralDisplay {
         this.wrap(s.line, PANEL_X, 190, 28, C.dim, 400, 340);
         this.sensors(PANEL_X + 90, 250, s.front, s.rear);
         break;
+      case 'autoPreview': {
+        this.viewportFrame();
+        let y = this.wrap(s.title, PANEL_X, 130, 42, C.text, 600, 340) + 52;
+        y = this.wrap('Io sterzo, accelero e freno.', PANEL_X, y, 26, C.text, 400, 340) + 34;
+        y = this.wrap('Tu sorvegli: puoi fermarmi con volante o freno.', PANEL_X, y, 26, C.text, 400, 340) + 46;
+        this.text(`Durata stimata ${Math.round(s.seconds)} s`, PANEL_X, y, 24, C.dim, 500);
+        if (s.countdown !== null) {
+          this.text(`Riparto tra ${s.countdown} s`, PANEL_X, 540, 30, C.accent, 600);
+        } else {
+          this.button(PANEL_X, 470, 340, 'Avvia', 'Invio', true);
+          this.button(PANEL_X, 548, 340, "Passa all'assistito", 'A', false);
+        }
+        break;
+      }
+      case 'autoRunning':
+        this.viewportFrame();
+        this.wrap('Sto parcheggiando', PANEL_X, 140, 42, C.text, 600, 340);
+        this.wrap('Frena o gira il volante per fermarmi', PANEL_X, 250, 28, C.dim, 400, 340);
+        break;
+      case 'autoStopped': {
+        this.viewportFrame();
+        let y = this.wrap(s.title, PANEL_X, 130, 38, C.text, 600, 340) + 44;
+        y = this.wrap(s.line, PANEL_X, y, 25, C.dim, 400, 340);
+        const top = Math.max(y + 30, H - 40 - s.options.length * 74);
+        s.options.forEach((o, i) => this.button(PANEL_X, top + i * 74, 340, o.label, o.key, i === 0));
+        break;
+      }
       case 'done':
         this.check(W / 2, 210);
         this.centred(s.title, 340, 50, C.text, 600);
@@ -218,6 +254,64 @@ export class CentralDisplay {
       this.wrap(c.you, x + 30, yy + 70, 27, C.text, 400, w - 60);
       this.text(`[${c.key}]`, x + w - 70, y + h - 26, 22, C.faint, 600);
     });
+  }
+
+  /** Touch button on the display; the key that simulates the touch is shown on the right. */
+  private button(x: number, y: number, w: number, label: string, key: string, primary: boolean) {
+    const g = this.g;
+    const h = 60;
+    if (primary) {
+      g.fillStyle = C.text;
+      this.roundRect(x, y, w, h, 14);
+      g.fill();
+    } else {
+      g.strokeStyle = C.dim;
+      g.lineWidth = 3;
+      this.roundRect(x, y, w, h, 14);
+      g.stroke();
+    }
+    g.font = `600 25px ${FONT}`;
+    g.fillStyle = primary ? C.bg : C.text;
+    g.fillText(label, x + 20, y + 39);
+    g.font = `500 18px ${FONT}`;
+    g.fillStyle = primary ? '#4a5560' : C.faint;
+    const kw = g.measureText(key).width;
+    g.fillText(key, x + w - 18 - kw, y + 38);
+  }
+
+  private drawLabels(recon: ReconView, labels: ReconLabel[]) {
+    const g = this.og;
+    g.clearRect(0, 0, VP.w, VP.h);
+    g.font = `600 22px ${FONT}`;
+    // Pills above their points, pushed apart so they never overlap
+    const placed: { x: number; y: number; w: number; q: [number, number]; text: string }[] = [];
+    for (const l of labels) {
+      const q = recon.project(l.position, VP.w, VP.h);
+      if (!q) continue;
+      const w = g.measureText(l.text).width + 24;
+      const x = Math.min(VP.w - w - 6, Math.max(6, q[0] - w / 2));
+      let y = Math.max(6, q[1] - 70);
+      for (const p of placed) {
+        const overlapX = x < p.x + p.w && p.x < x + w;
+        if (overlapX && Math.abs(y - p.y) < 42) y = p.y - 44 >= 6 ? p.y - 44 : p.y + 44;
+      }
+      placed.push({ x, y, w, q, text: l.text });
+    }
+    for (const p of placed) {
+      g.strokeStyle = 'rgba(255,255,255,0.7)';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(p.q[0], p.q[1] - 8);
+      g.lineTo(Math.min(p.x + p.w - 10, Math.max(p.x + 10, p.q[0])), p.y + 36);
+      g.stroke();
+      g.fillStyle = 'rgba(10,14,18,0.9)';
+      g.beginPath();
+      g.roundRect(p.x, p.y, p.w, 36, 18);
+      g.fill();
+      g.fillStyle = '#eef2f5';
+      g.fillText(p.text, p.x + 12, p.y + 26);
+    }
+    this.overlayTex.needsUpdate = true;
   }
 
   private viewportFrame() {

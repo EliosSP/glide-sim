@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
-import { PHYSICS_DT, START, TARGET_SPACE_LENGTH, VEHICLE } from './config';
+import { PHYSICS_DT, ROAD, START, TARGET_SPACE_LENGTH, VEHICLE } from './config';
 import { World, type Quality, type TimeOfDay } from './scene/world';
 import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
-import { VehicleState } from './vehicle/kinematics';
+import { VehicleState, type DriveInput } from './vehicle/kinematics';
 import { Keyboard } from './vehicle/input';
 import { Views, VIEW_LABELS } from './views/cameras';
 import { Hud } from './ui/hud';
-import { CentralDisplay } from './display/centralDisplay';
+import { CentralDisplay, type ReconLabel } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
 import { MirrorReflection, aimMirror } from './mirrors/mirrorReflection';
 import { LightBar, type BarView } from './mirrors/lightBar';
@@ -49,7 +49,12 @@ rig.mirrors.left.getObjectByName('bar-mount')!.add(bars.left.mesh);
 rig.mirrors.right.getObjectByName('bar-mount')!.add(bars.right.mesh);
 
 // --- Glide flow: approach, space choice, P, mode choice, assisted manoeuvre, end ---
-const flowSettings = { cameraWhileMoving: false, curbPoorlyVisible: false };
+const flowSettings = {
+  cameraWhileMoving: false,
+  curbPoorlyVisible: false,
+  speedProfile: 'fluid' as 'fluid' | 'abrupt',
+  autoLead: 1.0,
+};
 const flow = new GlideFlow(street.spaces, collisions, flowSettings, (e) => console.debug('[glide]', e), START.z);
 let lastBarViews: { left: BarView; right: BarView } | null = null;
 let shownPlan: ParkPlan | null = null;
@@ -90,6 +95,11 @@ function setQuality(q: Quality) {
   for (const m of mirrors) m.setResolution(q === 'high' ? 640 : 320);
 }
 displayFolder.add(flowSettings, 'cameraWhileMoving').name('Telecamera in movimento');
+const scenarioFolder = gui.addFolder('Autonomo e scenari');
+scenarioFolder.add(flowSettings, 'speedProfile', { Fluido: 'fluid', Brusco: 'abrupt' }).name('Profilo velocità');
+scenarioFolder.add(flowSettings, 'autoLead', 0.5, 1.5, 0.05).name('Anticipo barra (s)');
+scenarioFolder.add(flowSettings, 'curbPoorlyVisible').name('Cordolo poco visibile (I2)');
+scenarioFolder.add({ obstacle: () => placeObstacle() }, 'obstacle').name('Ostacolo imprevisto (I3)');
 let guiVisible = false;
 gui.show(guiVisible);
 world.setTime('day');
@@ -107,6 +117,10 @@ keys.on('KeyQ', () => flow.onBlinker('left', car, nowS()));
 keys.on('KeyP', () => flow.onParkButton(car, nowS(), contacts));
 keys.on('Digit1', () => flow.onModeChosen('assisted', car, nowS()));
 keys.on('Digit2', () => flow.onModeChosen('auto', car, nowS()));
+keys.on('Enter', () => flow.onStart(car, nowS()));
+keys.on('NumpadEnter', () => flow.onStart(car, nowS()));
+keys.on('KeyA', () => flow.onSwitchToAssisted(car, nowS()));
+keys.on('KeyM', () => flow.onManual(nowS()));
 keys.on('F1', () => gui.show((guiVisible = !guiVisible)));
 keys.on('Escape', () => {
   car.reset(START.x, START.z, START.heading);
@@ -115,7 +129,36 @@ keys.on('Escape', () => {
   contacts = 0;
   inContact = null;
   flow.reset();
+  removeObstacle();
 });
+
+// --- I3 test: an object appears at the back of the space (bin by the curb) ---
+const binMesh = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.32, 0.3, 1.0, 20),
+  new THREE.MeshStandardMaterial({ color: 0x3c4a3f, roughness: 0.7 }),
+);
+binMesh.castShadow = true;
+binMesh.visible = false;
+world.scene.add(binMesh);
+
+function placeObstacle() {
+  const plan = flow.autoPlanNow;
+  if (!plan) return;
+  // Just behind where the car would end up: the end position must move forward, a single manoeuvre still fits
+  const x = plan.final.x - VEHICLE.rearOverhang - 0.22;
+  const z = ROAD.curbZ - 0.45;
+  binMesh.position.set(x, 0.5, z);
+  binMesh.visible = true;
+  collisions.addObject('i3', x, z, 0.32, 0.32);
+  recon.setObject('i3', { x, z });
+  flow.onObstacle(car, nowS());
+}
+
+function removeObstacle() {
+  binMesh.visible = false;
+  collisions.removeObject('i3');
+  recon.setObject('i3', null);
+}
 
 window.addEventListener('resize', () => world.resize());
 
@@ -137,14 +180,19 @@ let inContact: ContactKind | null = null;
 let contactAt = { x: 0, z: 0 };
 const CONTACT_LABEL: Record<ContactKind, string> = { auto: 'auto parcheggiata', cordolo: 'cordolo' };
 
-function physicsStep(input: ReturnType<Keyboard['drive']>) {
+function physicsStep(input: DriveInput, now: number) {
   const before = car.snapshot();
-  car.step(input, PHYSICS_DT);
+  // Autonomous: Glide moves the car along its trajectory; after a takeover it brakes
+  const control = flow.autoControl();
+  if (control === 'auto') flow.autoStep(car, PHYSICS_DT, input, now);
+  else if (control === 'braking') car.step(flow.brakeInput(input), PHYSICS_DT);
+  else car.step(input, PHYSICS_DT);
   const hit = collisions.check(car.x, car.z, car.heading, car.steer);
   // Already overlapping (e.g. after a reset onto an obstacle): let the car move out
   const wasHit = hit && collisions.check(before.x, before.z, before.heading, before.steer);
   if (hit && !wasHit) {
     car.restore(before);
+    if (control === 'auto') flow.autoHalt(car);
     if (!inContact) contacts++;
     inContact = hit;
     contactAt = { x: car.x, z: car.z };
@@ -159,7 +207,7 @@ function frame(time: number) {
   acc += dt;
   const input = keys.drive();
   while (acc >= PHYSICS_DT) {
-    physicsStep(input);
+    physicsStep(input, performance.now() / 1000);
     acc -= PHYSICS_DT;
   }
 
@@ -183,12 +231,14 @@ function frame(time: number) {
     recon.setSpaceLook(sp.id, chosen ? (fits ? 'chosen' : 'chosenNoFit') : fits ? 'fits' : 'noFit');
   }
   const vp = CentralDisplay.viewportFor(out.display);
-  if (vp === 'recon') recon.render(world.renderer, { x: car.x, z: car.z, heading: car.heading }, dt);
+  const autoInfo = flow.reconInfo(now);
+  const labels: ReconLabel[] = autoInfo ? autoInfo.preview.points.map((p) => ({ position: p.position, text: p.label })) : [];
+  if (vp === 'recon') recon.render(world.renderer, { x: car.x, z: car.z, heading: car.heading }, dt, autoInfo, flow.auto?.timeline ?? null);
   if (vp === 'camera') {
     world.renderer.shadowMap.needsUpdate = true;
     rearCam.render(world.renderer, world.scene);
   }
-  display.update(out.display, now, recon.target.texture, rearCam, flow.guide);
+  display.update(out.display, now, recon, rearCam, flow.guide, labels);
 
   render();
 
@@ -225,6 +275,15 @@ function frame(time: number) {
 
 function assistHud(): string[] {
   const m = flow.maneuver;
+  const a = flow.auto;
+  if (a) {
+    const pv = a.preview;
+    return [
+      `Flusso    ${flow.screen} · tratto ${a.stage} · ${a.t.toFixed(1)}/${a.timeline.total.toFixed(1)} s · ${a.timeline.profile}`,
+      `Previsto  ${pv.points.map((p) => p.label).join(' | ')}`,
+      `Min visto ${a.minSeen ? (a.minSeen.distance * 100).toFixed(0) + ' cm' : '—'}`,
+    ];
+  }
   if (!m) return [`Flusso    ${flow.screen}${flow.chosen ? ` · spazio ${flow.chosen.id}` : ''}`];
   const pl = m.plan;
   const deg = (r: number) => THREE.MathUtils.radToDeg(r).toFixed(0);
@@ -278,5 +337,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

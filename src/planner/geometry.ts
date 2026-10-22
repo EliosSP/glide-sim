@@ -47,6 +47,17 @@ function segDist(px: number, pz: number, ax: number, az: number, bx: number, bz:
   return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
 }
 
+/** Distance from a point to a polygon's outline. */
+export function pointPolygonDistance(px: number, pz: number, poly: Polygon) {
+  let d = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, az] = poly[i];
+    const [bx, bz] = poly[(i + 1) % poly.length];
+    d = Math.min(d, segDist(px, pz, ax, az, bx, bz));
+  }
+  return d;
+}
+
 /** Separating axis test for convex polygons. */
 export function polygonsOverlap(a: Polygon, b: Polygon) {
   for (const poly of [a, b]) {

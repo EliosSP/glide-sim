@@ -5,8 +5,13 @@ import type { VehicleState } from '../vehicle/kinematics';
 import type { Collisions } from '../vehicle/collision';
 import type { BarView } from '../mirrors/lightBar';
 import { advance, type Pose } from '../planner/geometry';
-import { planParallel } from '../planner/parallelPlanner';
+import { planParallel, type ParkPlan } from '../planner/parallelPlanner';
 import { AssistedManeuver, DEFAULT_ASSIST, type AssistEvent, type AssistedPhase } from './assisted';
+import type { DriveInput } from '../vehicle/kinematics';
+import {
+  AutoRun, AutoTimeline, autoBars, buildTimeline, clearanceLabel, previewOf,
+  type AutoPreview, type SpeedProfile,
+} from './autonomous';
 
 export type Blinker = 'left' | 'right' | null;
 export type ModeChoice = 'auto' | 'assisted';
@@ -24,7 +29,17 @@ export type DisplayScreen =
   | { kind: 'choose'; recommended: ModeChoice; reason: string }
   | { kind: 'assisted'; title: string; line: string; mirror: 'left' | 'right' | null; camera: boolean }
   | { kind: 'inside'; front: number; rear: number; line: string }
-  | { kind: 'done'; title: string; lines: string[] };
+  | { kind: 'done'; title: string; lines: string[] }
+  | { kind: 'autoPreview'; title: string; seconds: number; countdown: number | null }
+  | { kind: 'autoRunning' }
+  | { kind: 'autoStopped'; title: string; line: string; options: { key: string; label: string }[] };
+
+/** What the reconstruction shows in autonomous mode: the trajectory, its critical points, the animated ghost. */
+export interface ReconInfo {
+  preview: AutoPreview;
+  ghostT: number | null; // preview animation time on the timeline
+  progressT: number; // part of the trajectory already driven
+}
 
 export interface DisplayModel {
   gear: string;
@@ -43,12 +58,28 @@ export interface CameraGuide {
   side: 'left' | 'right';
 }
 
-export type FlowEvent = AssistEvent | { type: 'parkButton'; t: number } | { type: 'modeChosen'; mode: ModeChoice; t: number };
+export type FlowEvent =
+  | AssistEvent
+  | { type: 'parkButton'; t: number }
+  | { type: 'modeChosen'; mode: ModeChoice; t: number }
+  | { type: 'autoStart'; t: number }
+  | { type: 'takeover'; t: number }
+  | { type: 'switchToAssisted'; from: 'preview' | 'stopped'; t: number }
+  | { type: 'lowConfidence'; t: number }
+  | { type: 'trajectoryChange'; t: number }
+  | { type: 'manual'; t: number }
+  | { type: 'autoDone'; seconds: number; minClearance: number | null; t: number };
 
 export interface FlowSettings {
   cameraWhileMoving: boolean; // display during movement (optional rear camera)
   curbPoorlyVisible: boolean; // scenario: sensors unsure about the curb
+  speedProfile: SpeedProfile; // autonomous: fluid (default) / abrupt
+  autoLead: number; // s, autonomous feedforward on the mirror bar
 }
+
+type StopReason = 'driver' | 'confidence' | 'obstacle';
+const PREVIEW_LOOP = 4.5; // s, length of the animated preview
+const REPLAN_NOTICE = 3.5; // s, the new trajectory is shown before moving again
 
 const OFF: BarView = { kind: 'off' };
 const SLOW = 15 / 3.6; // approach view below this speed
@@ -67,7 +98,8 @@ const PHASE_LINES: Record<AssistedPhase, { title: string; line: string; mirror: 
 
 /** Steps 1–5 and 11–12 of the experience, plus the assisted manoeuvre. */
 export class GlideFlow {
-  screen: 'drive' | 'approach' | 'choose' | 'assisted' | 'done' = 'drive';
+  screen: 'drive' | 'approach' | 'choose' | 'assisted' | 'done' | 'autoPreview' | 'autoRunning' | 'autoStopped' | 'autoReplan' =
+    'drive';
   blinker: Blinker = null;
   chosen: FreeSpace | null = null;
   locked = false;
@@ -83,6 +115,19 @@ export class GlideFlow {
   private doneInfo: { title: string; lines: string[] } | null = null;
   private contactsAtStart = 0;
   private lastPose: Pose = { x: 0, z: 0, heading: 0 };
+
+  // Autonomous mode
+  auto: AutoRun | null = null;
+  private autoPlan: ParkPlan | null = null;
+  private previewStart = 0;
+  private autoStartedAt = 0;
+  private braking: StopReason | null = null; // stopping before entering the stopped state
+  private replanAfterStop = false;
+  private stopReason: StopReason | null = null;
+  private stopPose: Pose | null = null;
+  private replanUntil = 0;
+  private lowConfidenceShown = false;
+  private nowForDisplay = 0;
 
   constructor(
     private spaces: FreeSpace[],
@@ -104,6 +149,12 @@ export class GlideFlow {
     this.recommendation = null;
     this.toast = null;
     this.doneInfo = null;
+    this.auto = null;
+    this.autoPlan = null;
+    this.braking = null;
+    this.replanAfterStop = false;
+    this.stopReason = null;
+    this.lowConfidenceShown = false;
   }
 
   private say(text: string, now: number) {
@@ -127,10 +178,11 @@ export class GlideFlow {
 
   onParkButton(car: VehicleState, now: number, contacts: number) {
     this.emit({ type: 'parkButton', t: now });
-    if (this.screen === 'assisted') {
+    if (this.screen === 'assisted' || this.screen === 'autoPreview') {
       this.maneuver = null;
+      this.auto = null;
       this.screen = 'approach';
-      this.say('Assistenza annullata', now);
+      this.say('Glide annullato', now);
       return;
     }
     if (this.screen === 'choose') {
@@ -148,11 +200,190 @@ export class GlideFlow {
   onModeChosen(mode: ModeChoice, car: VehicleState, now: number) {
     if (this.screen !== 'choose' || !this.evaluation) return;
     this.emit({ type: 'modeChosen', mode, t: now });
-    if (mode === 'auto') return this.say('Modalità autonoma: arriva con la milestone 5', now);
     const plan = planParallel(this.evaluation.space, this.collisions, car.z);
     if (!plan) return this.say('Da qui non riesco a calcolare la manovra', now);
+    if (mode === 'assisted') return this.startAssisted(plan, car, now, 'positioning');
+    // A1: animated preview of the whole trajectory, with its critical points
+    this.autoPlan = plan;
+    const pose = { x: car.x, z: car.z, heading: car.heading };
+    const tl = buildTimeline(pose, car.steer, 'position', plan, this.collisions, this.settings.speedProfile);
+    this.auto = new AutoRun(tl, previewOf(tl, this.collisions, this.settings.curbPoorlyVisible));
+    this.lowConfidenceShown = false;
+    this.previewStart = now;
+    this.screen = 'autoPreview';
+  }
+
+  private startAssisted(plan: ParkPlan, car: VehicleState, now: number, from: 'positioning' | 'steer1' | 'steer2') {
     this.maneuver = new AssistedManeuver(plan, this.collisions, DEFAULT_ASSIST, (e) => this.emit(e), now);
+    if (from !== 'positioning') this.maneuver.startFrom(from, { x: car.x, z: car.z, heading: car.heading }, now);
+    this.auto = null;
     this.screen = 'assisted';
+  }
+
+  /** "Avvia" (Enter): start after the preview, or resume after a takeover (I1). */
+  onStart(car: VehicleState, now: number) {
+    if (this.screen === 'autoPreview' && this.auto) {
+      this.screen = 'autoRunning';
+      this.autoStartedAt = now;
+      this.emit({ type: 'autoStart', t: now });
+    } else if (this.screen === 'autoStopped' && this.stopReason === 'driver') {
+      if (this.rebuild(car)) this.screen = 'autoRunning';
+      else this.stopWith('obstacle', car);
+    }
+  }
+
+  /** "Passa all'assistito" (A): from the preview (step 6), or from where the car stopped. */
+  onSwitchToAssisted(car: VehicleState, now: number) {
+    if (this.screen === 'autoPreview' && this.autoPlan) {
+      this.emit({ type: 'switchToAssisted', from: 'preview', t: now });
+      const plan = planParallel(this.autoPlan.space, this.collisions, car.z) ?? this.autoPlan;
+      return this.startAssisted(plan, car, now, 'positioning');
+    }
+    if (this.screen === 'autoStopped' && this.auto && this.autoPlan) {
+      this.emit({ type: 'switchToAssisted', from: 'stopped', t: now });
+      const stage = this.auto.stage;
+      if (stage === 'position') {
+        const plan = planParallel(this.autoPlan.space, this.collisions, car.z) ?? this.autoPlan;
+        return this.startAssisted(plan, car, now, 'positioning');
+      }
+      this.startAssisted(this.autoPlan, car, now, stage === 'arc1' ? 'steer1' : 'steer2');
+    }
+  }
+
+  /** "Finisco io a mano" (M). */
+  onManual(now: number) {
+    if (this.screen !== 'autoStopped') return;
+    this.emit({ type: 'manual', t: now });
+    this.toManual(now);
+  }
+
+  private toManual(now: number) {
+    this.auto = null;
+    this.screen = 'drive';
+    this.blinker = null;
+    this.locked = false;
+    this.evaluation = null;
+    this.say('Il controllo è tuo', now);
+  }
+
+  /** I3: an obstacle appeared (already added to the collisions): stop, re-plan, announce, continue. */
+  onObstacle(car: VehicleState, now: number) {
+    if (this.screen === 'autoPreview' && this.auto) {
+      if (this.rebuild(car)) {
+        this.previewStart = now;
+        this.emit({ type: 'trajectoryChange', t: now });
+      }
+    } else if (this.screen === 'autoRunning' && !this.braking) {
+      this.braking = 'obstacle';
+      this.replanAfterStop = true;
+    }
+  }
+
+  /** Who moves the car this physics step. */
+  autoControl(): 'auto' | 'braking' | null {
+    if (this.braking) return 'braking';
+    return this.screen === 'autoRunning' ? 'auto' : null;
+  }
+
+  /** Brake input while stopping: immediate when the driver intervened, Glide's own stop otherwise. */
+  brakeInput(input: DriveInput): DriveInput {
+    return { ...input, throttle: false, brake: true, hardBrake: this.braking === 'driver' };
+  }
+
+  autoStep(car: VehicleState, dt: number, input: DriveInput, now: number) {
+    const run = this.auto!;
+    // I1: any steering or braking input stops the car at once
+    if (input.brake || input.hardBrake || input.steerLeft || input.steerRight) {
+      this.braking = 'driver';
+      this.emit({ type: 'takeover', t: now });
+      return;
+    }
+    // I2: Glide loses confidence where the preview said the sensors see poorly
+    if (this.settings.curbPoorlyVisible && !this.lowConfidenceShown) {
+      const t2 = run.timeline.stageStart('arc2');
+      if (t2 !== null && run.t + dt >= t2) {
+        run.t = t2; // stopped at the end of arc 1, right before the counter-steer
+        this.lowConfidenceShown = true;
+        this.emit({ type: 'lowConfidence', t: now });
+        this.stopWith('confidence', car);
+        return;
+      }
+    }
+    run.advance(car, dt, this.collisions);
+    if (run.finished) this.finishAuto(now);
+  }
+
+  /** Something blocked the car: stop and offer the options. */
+  autoHalt(car: VehicleState) {
+    car.speed = 0;
+    this.braking = null;
+    this.stopWith('obstacle', car);
+  }
+
+  private stopWith(reason: StopReason, car: VehicleState) {
+    this.stopReason = reason;
+    this.stopPose = { x: car.x, z: car.z, heading: car.heading };
+    this.screen = 'autoStopped';
+  }
+
+  /** Rest of the manoeuvre from where the car is now (resume, re-plan). */
+  private rebuild(car: VehicleState): boolean {
+    if (!this.auto || !this.autoPlan) return false;
+    const pose = { x: car.x, z: car.z, heading: car.heading };
+    const stage = this.auto.stage;
+    let tl: AutoTimeline;
+    if (stage === 'end') {
+      tl = new AutoTimeline(pose, car.steer, this.settings.speedProfile);
+      tl.addSteer(0, 'end');
+    } else {
+      if (stage === 'position') {
+        const plan = planParallel(this.autoPlan.space, this.collisions, car.z);
+        if (!plan) return false;
+        this.autoPlan = plan;
+      }
+      tl = buildTimeline(pose, car.steer, stage, this.autoPlan, this.collisions, this.settings.speedProfile);
+    }
+    const preview = previewOf(tl, this.collisions, this.settings.curbPoorlyVisible && !this.lowConfidenceShown);
+    if (preview.minClearance && preview.minClearance.distance < 0.05) return false;
+    const run = new AutoRun(tl, preview);
+    run.minSeen = this.auto.minSeen;
+    this.auto = run;
+    return true;
+  }
+
+  private finishAuto(now: number) {
+    const run = this.auto!;
+    const seen = run.minSeen;
+    const predicted = run.preview.minClearance;
+    let line = seen ? `minimo ${clearanceLabel(seen)}` : '';
+    if (seen && predicted) {
+      const asPredicted = Math.abs(seen.distance - predicted.distance) <= 0.05;
+      line += asPredicted ? ', come previsto' : ` (previsti ${Math.round(predicted.distance * 100)})`;
+    }
+    const seconds = Math.round(now - this.autoStartedAt);
+    this.emit({ type: 'autoDone', seconds, minClearance: seen?.distance ?? null, t: now });
+    this.doneInfo = { title: `Parcheggiato in ${seconds} s`, lines: [line, 'Il controllo torna a te'] };
+    this.screen = 'done';
+    this.blinker = null;
+    this.locked = false;
+    this.evaluation = null;
+  }
+
+  /** Plan of the running autonomous manoeuvre (used to place the I3 test obstacle). */
+  get autoPlanNow() {
+    return this.auto ? this.autoPlan : null;
+  }
+
+  /** Data for the reconstruction while in autonomous mode. */
+  reconInfo(now: number): ReconInfo | null {
+    if (!this.auto) return null;
+    const p = this.auto.preview;
+    if (this.screen === 'autoPreview' || this.screen === 'autoReplan') {
+      const u = ((now - this.previewStart) % PREVIEW_LOOP) / PREVIEW_LOOP;
+      return { preview: p, ghostT: u * p.seconds, progressT: 0 };
+    }
+    if (this.screen === 'autoRunning' || this.screen === 'autoStopped') return { preview: p, ghostT: null, progressT: this.auto.t };
+    return null;
   }
 
   // ---------- logic ----------
@@ -228,11 +459,40 @@ export class GlideFlow {
         this.evaluation = null;
       }
     }
+    // Autonomous: stopping, re-plan notice, mirrors
+    if (this.braking && speed < 0.02) {
+      const reason = this.braking;
+      this.braking = null;
+      if (this.replanAfterStop) {
+        this.replanAfterStop = false;
+        if (this.rebuild(car)) {
+          this.screen = 'autoReplan';
+          this.previewStart = now;
+          this.replanUntil = now + REPLAN_NOTICE;
+          this.emit({ type: 'trajectoryChange', t: now });
+        } else {
+          this.stopWith('obstacle', car);
+        }
+      } else {
+        this.stopWith(reason, car);
+      }
+    }
+    if (this.screen === 'autoReplan' && now >= this.replanUntil) this.screen = 'autoRunning';
+    if (this.screen === 'autoStopped' && this.stopReason === 'driver' && this.stopPose) {
+      // Driving away after a takeover means finishing by hand
+      if (Math.hypot(car.x - this.stopPose.x, car.z - this.stopPose.z) > 0.3) this.toManual(now);
+    }
+    if (this.screen === 'autoRunning' && this.auto && !this.braking) {
+      bars = autoBars(this.auto.timeline, this.auto.t, { lead: this.settings.autoLead, announceLead: DEFAULT_ASSIST.announceLead, segments: DEFAULT_ASSIST.segments });
+    }
+
     if (this.screen === 'done' && car.gear === 'D' && car.speed > 1) {
       this.screen = 'drive';
       this.maneuver = null;
+      this.auto = null;
     }
 
+    this.nowForDisplay = now;
     // A message belongs to the screen it was shown on
     if (this.toast && (now > this.toast.until || this.screen !== this.toastScreen)) this.toast = null;
     return {
@@ -273,6 +533,33 @@ export class GlideFlow {
       }
       case 'done':
         return { kind: 'done', title: this.doneInfo!.title, lines: this.doneInfo!.lines };
+      case 'autoPreview':
+        return { kind: 'autoPreview', title: 'Anteprima', seconds: this.auto!.preview.seconds, countdown: null };
+      case 'autoReplan':
+        return {
+          kind: 'autoPreview',
+          title: 'Cambio traiettoria: ostacolo',
+          seconds: this.auto!.preview.seconds,
+          countdown: Math.max(1, Math.ceil(this.replanUntil - this.nowForDisplay)),
+        };
+      case 'autoRunning':
+        return { kind: 'autoRunning' };
+      case 'autoStopped': {
+        const assisted = { key: 'A', label: 'Continua in assistito da qui' };
+        const manual = { key: 'M', label: 'Finisco io a mano' };
+        if (this.stopReason === 'driver') {
+          return {
+            kind: 'autoStopped',
+            title: 'Hai preso il controllo',
+            line: 'Mi sono fermato. Come vuoi continuare?',
+            options: [{ key: 'Invio', label: 'Riprendi in autonomo' }, assisted, manual],
+          };
+        }
+        if (this.stopReason === 'confidence') {
+          return { kind: 'autoStopped', title: 'Non vedo bene il cordolo', line: 'Mi sono fermato: da qui continua tu in assistito', options: [assisted, manual] };
+        }
+        return { kind: 'autoStopped', title: 'Non trovo una manovra sicura', line: "C'è un ostacolo sul percorso", options: [assisted, manual] };
+      }
     }
   }
 
