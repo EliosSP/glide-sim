@@ -48,6 +48,12 @@ const mirrors = [
   new MirrorReflection(glassOf(rig.mirrors.right), 0.55),
 ];
 for (const m of mirrors) m.hide = [rig.mirrors.left, rig.mirrors.right];
+// Interior rear-view mirror: flat, lower resolution, only rendered when the driver view is on screen
+const rearMirrorGroup = rig.rearMirror!;
+aimMirror(rearMirrorGroup, glassOf(rearMirrorGroup), eyeLocal, new THREE.Vector3(-1, -0.04, 0));
+const rearMirror = new MirrorReflection(glassOf(rearMirrorGroup), 1, 320);
+rearMirror.hide = [rearMirrorGroup];
+let frameNo = 0;
 
 // Light bars on the mirror rims; the zero end is always the one towards the car
 const bars = {
@@ -153,6 +159,7 @@ const qualityCtrl = sceneFolder
 function setQuality(q: Quality) {
   world.setQuality(q);
   for (const m of mirrors) m.setResolution(q === 'high' ? 640 : 320);
+  rearMirror.setResolution(q === 'high' ? 320 : 192);
 }
 displayFolder.add(flowSettings, 'cameraWhileMoving').name('Telecamera in movimento');
 const scenarioFolder = gui.addFolder('Autonomo e scenari');
@@ -311,7 +318,7 @@ function frame(time: number) {
   rig.root.updateMatrixWorld();
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
-  views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : null;
+  views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
 
   const now = nowS();
   actors.update(dt, now, { x: car.x, z: car.z, heading: car.heading }, actorContext());
@@ -426,6 +433,12 @@ function render() {
   if (views.split || views.current !== 'top') {
     (views.split || views.current === 'driver' ? views.driver : views.chase).getWorldPosition(eyeWorld);
     for (const m of mirrors) m.render(r, world.scene, eyeWorld);
+  }
+  // Rear-view mirror: only seen from the driver's seat; every other frame in low quality
+  frameNo++;
+  if ((views.split || views.current === 'driver') && (world.quality === 'high' || frameNo % 2 === 0)) {
+    views.driver.getWorldPosition(eyeWorld);
+    rearMirror.render(r, world.scene, eyeWorld);
   }
   if (!views.split) {
     r.setScissorTest(false);

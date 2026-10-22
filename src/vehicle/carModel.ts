@@ -2,10 +2,44 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { VEHICLE } from '../config';
 
+export type CarStyle = 'hatch' | 'sedan' | 'suv' | 'mpv';
+
+type P = [number, number];
+/**
+ * Body styles, same footprint (planner and collisions use config.ts): front of the profile after
+ * the front arch, side glass [rear bottom, rear top, front top, front bottom] and roof.
+ */
+const STYLES: Record<CarStyle, { nose: P[]; glass: P[]; roof: P[] }> = {
+  hatch: {
+    nose: [[3.0, 0.26], [3.3, 0.3], [3.42, 0.45], [3.4, 0.62], [3.25, 0.76], [2.5, 0.9], [1.85, 0.97], [0.0, 0.99], [-0.6, 0.98], [-0.7, 0.9], [-0.74, 0.6], [-0.72, 0.4]],
+    glass: [[-0.58, 0.97], [-0.47, 1.4], [1.36, 1.4], [1.88, 0.98]],
+    roof: [[-0.47, 1.4], [-0.45, 1.46], [1.15, 1.52], [1.36, 1.4]],
+  },
+  // Three-box: the rear glass ends on a boot deck
+  sedan: {
+    nose: [[3.0, 0.26], [3.3, 0.3], [3.42, 0.45], [3.4, 0.6], [3.25, 0.74], [2.5, 0.88], [1.85, 0.96], [0.0, 0.99], [-0.5, 1.0], [-0.68, 0.96], [-0.74, 0.6], [-0.72, 0.4]],
+    glass: [[-0.22, 0.99], [0.08, 1.38], [1.3, 1.39], [1.86, 0.97]],
+    roof: [[0.08, 1.38], [0.1, 1.44], [1.1, 1.48], [1.3, 1.39]],
+  },
+  // Higher belt and roof
+  suv: {
+    nose: [[3.0, 0.26], [3.3, 0.3], [3.44, 0.5], [3.42, 0.74], [3.3, 0.9], [2.5, 1.03], [1.85, 1.09], [0.0, 1.11], [-0.6, 1.1], [-0.7, 1.02], [-0.74, 0.6], [-0.72, 0.4]],
+    glass: [[-0.6, 1.09], [-0.5, 1.56], [1.3, 1.56], [1.86, 1.1]],
+    roof: [[-0.5, 1.56], [-0.48, 1.63], [1.1, 1.68], [1.3, 1.56]],
+  },
+  // Short bonnet, tall boxy cabin
+  mpv: {
+    nose: [[3.0, 0.26], [3.3, 0.3], [3.42, 0.48], [3.4, 0.7], [3.2, 0.86], [2.7, 0.99], [2.25, 1.04], [0.0, 1.06], [-0.65, 1.05], [-0.72, 0.98], [-0.74, 0.6], [-0.72, 0.4]],
+    glass: [[-0.68, 1.04], [-0.64, 1.66], [1.55, 1.66], [2.25, 1.04]],
+    roof: [[-0.64, 1.66], [-0.62, 1.72], [1.4, 1.74], [1.55, 1.66]],
+  },
+};
+const v2 = (pts: P[]) => pts.map(([x, y]) => new THREE.Vector2(x, y));
+
 // Side profile of the lower body (x forward from rear axle, y up), with wheel arches.
 const ARCH_R = 0.4;
 const ARCH_CY = 0.32;
-function bodyProfile(): THREE.Vector2[] {
+function bodyProfile(style: CarStyle): THREE.Vector2[] {
   const p: [number, number][] = [[-0.7, 0.3], [-0.62, 0.26], [-0.4, 0.26]];
   const arch = (cx: number) => {
     for (let i = 0; i <= 12; i++) {
@@ -16,11 +50,8 @@ function bodyProfile(): THREE.Vector2[] {
   arch(0);
   p.push([0.4, 0.26], [VEHICLE.wheelbase - 0.4, 0.26]);
   arch(VEHICLE.wheelbase);
-  p.push(
-    [3.0, 0.26], [3.3, 0.3], [3.42, 0.45], [3.4, 0.62], [3.25, 0.76],
-    [2.5, 0.9], [1.85, 0.97], [0.0, 0.99], [-0.6, 0.98], [-0.7, 0.9], [-0.74, 0.6], [-0.72, 0.4],
-  );
-  return p.map(([x, y]) => new THREE.Vector2(x, y));
+  p.push(...STYLES[style].nose);
+  return v2(p);
 }
 
 /** Sutherland–Hodgman clip of a polygon to xMin ≤ x ≤ xMax. */
@@ -71,19 +102,26 @@ function beam(a: THREE.Vector2, b: THREE.Vector2, z: number, thick: number, dept
 }
 
 // ---------- shared resources ----------
-const GLASS_POLY = [[-0.58, 0.97], [-0.47, 1.4], [1.36, 1.4], [1.88, 0.98]].map(([x, y]) => new THREE.Vector2(x, y));
-const ROOF_POLY = [[-0.47, 1.4], [-0.45, 1.46], [1.15, 1.52], [1.36, 1.4]].map(([x, y]) => new THREE.Vector2(x, y));
-
-let shared: ReturnType<typeof makeShared> | null = null;
-function makeShared() {
-  const profile = bodyProfile();
+const styleGeo = new Map<CarStyle, ReturnType<typeof makeStyleGeo>>();
+function makeStyleGeo(style: CarStyle) {
+  const profile = bodyProfile(style);
+  const st = STYLES[style];
   return {
     bodyFull: extrude(profile, VEHICLE.width),
     bodyFront: extrude(clipX(profile, 1.62, 9), VEHICLE.width, 0.03),
     bodyRear: extrude(clipX(profile, -9, -0.35), VEHICLE.width, 0.03),
     door: extrude(clipX(profile, -0.35, 1.62), 0.07, 0.015),
-    glass: extrude(GLASS_POLY, 1.46, 0.03),
-    roof: extrude(ROOF_POLY, 1.44, 0.03),
+    glass: extrude(v2(st.glass), 1.46, 0.03),
+    roof: extrude(v2(st.roof), 1.44, 0.03),
+  };
+}
+
+let shared: ReturnType<typeof makeShared> | null = null;
+function makeShared() {
+  return {
+    seam: new THREE.BoxGeometry(0.008, 0.5, 0.004),
+    plate: new THREE.PlaneGeometry(0.42, 0.1).rotateY(Math.PI / 2), // faces +X
+    plateMat: new THREE.MeshStandardMaterial({ map: plateTexture(), roughness: 0.4 }),
     tire: new THREE.CylinderGeometry(VEHICLE.wheelRadius, VEHICLE.wheelRadius, VEHICLE.wheelWidth, 32, 1).rotateX(Math.PI / 2),
     rim: new THREE.CylinderGeometry(0.205, 0.205, VEHICLE.wheelWidth + 0.01, 24, 1).rotateX(Math.PI / 2),
     spoke: new THREE.BoxGeometry(0.38, 0.045, 0.02),
@@ -98,6 +136,27 @@ function makeShared() {
     interiorMat: new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.85 }),
     seatMat: new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.95 }),
   };
+}
+
+/** EU-style plate: white, blue band on the left. */
+function plateTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 64;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#f2f2ee';
+  g.fillRect(0, 0, 256, 64);
+  g.fillStyle = '#1f47a8';
+  g.fillRect(0, 0, 22, 64);
+  g.fillRect(234, 0, 22, 64);
+  g.fillStyle = '#16181b';
+  g.font = 'bold 40px Arial, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('GL 036 DE', 128, 34);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 const paintCache = new Map<number, THREE.MeshPhysicalMaterial>();
@@ -118,10 +177,15 @@ export interface CarRig {
   steeringSpin?: THREE.Object3D;
   displayMesh?: THREE.Mesh;
   mirrors: { left: THREE.Group; right: THREE.Group };
+  rearMirror?: THREE.Group; // interior rear-view mirror (Jacopo's car only); no light bar on it
 }
 
-export function createCar(opts: { color: number; interior: boolean }): CarRig {
+export function createCar(opts: { color: number; interior: boolean; style?: CarStyle }): CarRig {
   const S = (shared ??= makeShared());
+  const style = opts.style ?? 'hatch';
+  let G = styleGeo.get(style);
+  if (!G) styleGeo.set(style, (G = makeStyleGeo(style)));
+  const st = STYLES[style];
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
@@ -136,24 +200,36 @@ export function createCar(opts: { color: number; interior: boolean }): CarRig {
 
   // Body shell
   if (opts.interior) {
-    add(S.bodyFront, paintMat);
-    add(S.bodyRear, paintMat);
+    add(G.bodyFront, paintMat);
+    add(G.bodyRear, paintMat);
     const half = VEHICLE.width / 2 - 0.035;
-    add(S.door, paintMat).position.z = -half;
-    add(S.door, paintMat).position.z = half;
+    add(G.door, paintMat).position.z = -half;
+    add(G.door, paintMat).position.z = half;
   } else {
-    add(S.bodyFull, paintMat);
+    add(G.bodyFull, paintMat);
+    // Door shut lines
+    const belt = st.glass[3][1];
+    for (const x of [1.62, 0.55, style === 'sedan' ? -0.15 : -0.35]) {
+      for (const s of [-1, 1]) add(S.seam, S.trimMat, body, false).position.set(x, (0.42 + belt) / 2, s * (VEHICLE.width / 2 + 0.002));
+    }
   }
-  add(S.glass, S.glassMat, body, false);
-  add(S.roof, paintMat);
+  add(G.glass, S.glassMat, body, false);
+  add(G.roof, paintMat);
 
-  // Pillars
+  // Pillars, from the glass outline: A (front), B (between the doors), C (rear)
+  const [rb, rt, ft, fb] = st.glass.map(([x, y]) => new THREE.Vector2(x, y));
   const zP = 0.72;
   for (const s of [-1, 1]) {
-    body.add(beam(new THREE.Vector2(1.88, 0.98), new THREE.Vector2(1.36, 1.41), s * zP, 0.07, 0.06, paintMat));
-    body.add(beam(new THREE.Vector2(0.55, 0.98), new THREE.Vector2(0.52, 1.43), s * zP, 0.09, 0.05, S.trimMat));
-    body.add(beam(new THREE.Vector2(-0.58, 0.98), new THREE.Vector2(-0.47, 1.41), s * zP, 0.22, 0.05, paintMat));
+    body.add(beam(fb, ft.clone().setY(ft.y + 0.01), s * zP, 0.07, 0.06, paintMat));
+    body.add(beam(new THREE.Vector2(0.55, rb.y), new THREE.Vector2(0.52, rt.y + 0.03), s * zP, 0.09, 0.05, S.trimMat));
+    body.add(beam(rb, rt.clone().setY(rt.y + 0.01), s * zP, style === 'sedan' ? 0.16 : 0.22, 0.05, paintMat));
   }
+
+  // Number plates
+  add(S.plate, S.plateMat, body, false).position.set(3.445, 0.47, 0);
+  const rear = add(S.plate, S.plateMat, body, false);
+  rear.position.set(-0.765, 0.56, 0);
+  rear.rotation.y = Math.PI;
 
   // Bumpers, lights
   const bumper = new THREE.BoxGeometry(0.08, 0.12, 1.62);
@@ -190,7 +266,8 @@ export function createCar(opts: { color: number; interior: boolean }): CarRig {
   }
 
   // Mirrors: housing on a stalk, glass facing backwards (texture assigned in milestone 2)
-  const mirrors = { left: makeMirror(-1, paintMat, S.trimMat), right: makeMirror(1, paintMat, S.trimMat) };
+  const mirrorY = st.glass[3][1] + 0.06;
+  const mirrors = { left: makeMirror(-1, paintMat, S.trimMat, mirrorY), right: makeMirror(1, paintMat, S.trimMat, mirrorY) };
   body.add(mirrors.left, mirrors.right);
 
   const rig: CarRig = { root, body, frontPivots, spinners, mirrors };
@@ -198,10 +275,10 @@ export function createCar(opts: { color: number; interior: boolean }): CarRig {
   return rig;
 }
 
-function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Material) {
+function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Material, y: number) {
   const g = new THREE.Group();
   g.name = side < 0 ? 'mirror-left' : 'mirror-right';
-  g.position.set(1.7, 1.04, side * 1.04);
+  g.position.set(1.7, y, side * 1.04);
   const shell = new THREE.Mesh(new RoundedBoxGeometry(0.11, 0.155, 0.225, 3, 0.035), paintMat);
   shell.castShadow = true;
   shell.name = 'shell';
@@ -290,6 +367,22 @@ function buildInterior(rig: CarRig, S: NonNullable<typeof shared>) {
   dispGroup.add(screen);
   b.add(dispGroup);
   rig.displayMesh = screen;
+
+  // Interior rear-view mirror: flat, on a short stem glued to the top of the windscreen
+  const rm = new THREE.Group();
+  rm.name = 'mirror-rear';
+  rm.position.set(1.42, 1.27, 0);
+  rm.add(new THREE.Mesh(new RoundedBoxGeometry(0.03, 0.07, 0.22, 2, 0.014), S.trimMat));
+  const rmGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.055), new THREE.MeshBasicMaterial({ color: 0x222830 }));
+  rmGlass.name = 'glass';
+  rmGlass.rotation.y = -Math.PI / 2; // faces -X (backwards)
+  rmGlass.position.set(-0.017, 0, 0);
+  rm.add(rmGlass);
+  b.add(rm);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.06, 6), S.trimMat);
+  stem.position.set(1.435, 1.32, 0);
+  b.add(stem);
+  rig.rearMirror = rm;
 }
 
 /** Pose the rig from the vehicle state (Ackermann on the front wheels). */
@@ -312,8 +405,8 @@ export function poseCar(rig: CarRig, x: number, z: number, heading: number, stee
 }
 
 /** A static parked car whose centre is at (cx, cz), facing +X or -X. */
-export function createParkedCar(cx: number, cz: number, length: number, color: number, facing = 1) {
-  const rig = createCar({ color, interior: false });
+export function createParkedCar(cx: number, cz: number, length: number, color: number, facing = 1, style: CarStyle = 'hatch') {
+  const rig = createCar({ color, interior: false, style });
   const s = length / VEHICLE.length;
   rig.root.scale.set(s, 1, 1);
   const centreLocal = (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;

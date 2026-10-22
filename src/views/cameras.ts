@@ -11,7 +11,7 @@ const ORDER: ViewName[] = ['driver', 'chase', 'top'];
 export const DRIVER_FOV = 78; // vertical, wider than default so both A-pillars and the display fit
 const GLANCE_FOV = 30; // looking at a mirror narrows the view, like focusing on it (a monitor has far less resolution than the eye)
 const HEAD_SPEED = 9; // 1/s, head-turn smoothing
-export type Glance = 'left' | 'right' | null;
+export type Glance = 'left' | 'right' | 'rear' | null;
 
 export class Views {
   readonly driver = new THREE.PerspectiveCamera(DRIVER_FOV, 1, 0.03, 600);
@@ -29,7 +29,7 @@ export class Views {
   private pitch = -0.12;
   private curYaw = 0;
   private curPitch = -0.12;
-  private glanceAngles: Record<'left' | 'right', { yaw: number; pitch: number }>;
+  private glanceAngles: Record<'left' | 'right' | 'rear', { yaw: number; pitch: number }>;
   private chasePos = new THREE.Vector3();
   private chaseInit = false;
 
@@ -45,7 +45,11 @@ export class Views {
       const d = g.position.clone().sub(this.head.position);
       return { yaw: Math.atan2(-d.z, d.x), pitch: Math.atan2(d.y, Math.hypot(d.x, d.z)) };
     };
-    this.glanceAngles = { left: angles(rig.mirrors.left), right: angles(rig.mirrors.right) };
+    this.glanceAngles = {
+      left: angles(rig.mirrors.left),
+      right: angles(rig.mirrors.right),
+      rear: rig.rearMirror ? angles(rig.rearMirror) : { yaw: -0.6, pitch: 0.1 },
+    };
 
     this.top.up.set(0, 0, -1); // driving direction points right on screen, curb at the bottom
     this.chase.layers.enable(DEBUG_LAYER);

@@ -21,6 +21,7 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 | R / D | retromarcia / marcia (solo da fermo) |
 | Spazio | freno forte |
 | Z / X (tieni premuto) | guarda lo specchietto sinistro / destro (la testa si gira e la vista si stringe) |
+| W (tieni premuto) | guarda il retrovisore interno |
 | Q / E | freccia sinistra / destra (a destra valuta lo spazio evidenziato) |
 | P | pulsante Park Assist (di nuovo: annulla; in autonomo frena e restituisce il controllo) |
 | 1 / 2 | sul display: Assistito / Autonomo |
@@ -40,7 +41,8 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 ## Cosa simula
 
 - **Collisioni:** carrozzeria contro auto parcheggiate, pneumatici contro il cordolo. Al contatto l'auto si ferma e il contatto viene contato (HUD, poi log CSV).
-- **Specchietti:** riflesso reale calcolato dall'occhio del guidatore (cambia se giri la testa). Destro convesso (campo più ampio, come sulle auto europee), sinistro quasi piano.
+- **Specchietti:** riflesso reale calcolato dall'occhio del guidatore (cambia se giri la testa). Destro convesso (campo più ampio, come sulle auto europee), sinistro quasi piano. Retrovisore interno piatto, senza barra luminosa (si vede attraverso abitacolo e lunotto; in qualità bassa si aggiorna a frame alterni).
+- **Ambiente:** asfalto, marciapiede a lastre, cordolo in pietra e intonaco delle facciate con texture PBR CC0; auto parcheggiate in quattro sagome (utilitaria, berlina, SUV, monovolume) con targhe; alberi, cestini sui lampioni, cartello P e strisce pedonali. Nessun oggetto sta in carreggiata o nella fila di parcheggio, quindi pianificatore e collisioni non cambiano.
 
 - **Parcheggio assistito:** il pianificatore calcola punto di inizio sterzata, angolo, punto di controsterzo, angolo di controsterzo e punto di raddrizzamento. Durante la manovra ricalcola dalla posizione reale: se sterzi un po' di più o di meno, il punto di controsterzo si sposta di conseguenza. Con la UI di debug visibile la traiettoria pianificata è disegnata sulla strada.
 - **Barre luminose:** tutti gli stati del capitolo 2 (pronto, in corso, in obiettivo, oltre, countdown, punto raggiunto, preannuncio, scatto, spento). Lo zero è sempre sul lato verso l'auto. La barra è sul bordo inferiore del guscio, visibile da dentro e da fuori.
@@ -92,7 +94,7 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 
 Prima del pitch (4 novembre 2026):
 - [x] 9. Bug B1–B6 (traiettoria solo da fuori, P annulla l'autonomo, auto ferma durante la ripianificazione, tasti Mac, barra sul bordo inferiore dello specchietto) + orologio unico e `?fixedStep=1`
-- [ ] 10. Retrovisore interno + ambiente (fase A)
+- [x] 10. Retrovisore interno + ambiente (fase A)
 - [ ] 11. Modalità demo + modalità test
 - [ ] 12. Log CSV + pannello parametri completo
 
@@ -105,4 +107,8 @@ Dopo il pitch:
 
 ## Crediti
 
-HDRI CC0 da [Poly Haven](https://polyhaven.com): *Kloofendal 48d Partly Cloudy (Pure Sky)* (giorno), *Qwantani Dusk 2 (Pure Sky)* (sera).
+Tutti gli asset sono CC0 da [Poly Haven](https://polyhaven.com):
+- HDRI: *Kloofendal 48d Partly Cloudy (Pure Sky)* (giorno), *Qwantani Dusk 2 (Pure Sky)* (sera).
+- Texture 1K (`public/textures/`): *Clean Asphalt* (strada), *Concrete Pavement 02* (marciapiede), *Concrete* (cordolo), *Beige Wall 001* (rilievo e rugosità dell'intonaco).
+
+Auto, persone, bici, alberi e arredo urbano sono procedurali (nessuna licenza).

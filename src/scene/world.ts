@@ -37,7 +37,7 @@ export class World {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoft is no longer supported; radius softens the edges
     this.renderer.shadowMap.autoUpdate = false; // updated once per frame in main
     container.appendChild(this.renderer.domElement);
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -48,6 +48,7 @@ export class World {
     c.left = -28; c.right = 28; c.top = 28; c.bottom = -28; c.near = 1; c.far = 120;
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.03;
+    this.sun.shadow.radius = 2.5;
     this.scene.add(this.sun, this.sun.target);
     this.scene.fog = new THREE.Fog(0xc9d6e2, 90, 260);
     this.setQuality('high');

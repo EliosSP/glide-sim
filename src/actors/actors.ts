@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ROAD, VEHICLE } from '../config';
-import { createCar, poseCar, type CarRig } from '../vehicle/carModel';
+import { createCar, poseCar, type CarRig, type CarStyle } from '../vehicle/carModel';
 import type { Collisions } from '../vehicle/collision';
 import { footprint, type Pose } from '../planner/geometry';
 import { createCyclist, createPedestrian, type Rider, type Walker } from './figures';
@@ -59,8 +59,8 @@ class LaneCar {
   spin = 0;
   active = false;
 
-  constructor(color: number, readonly z: number, readonly dir: 1 | -1, scene: THREE.Scene) {
-    this.rig = createCar({ color, interior: false });
+  constructor(color: number, readonly z: number, readonly dir: 1 | -1, scene: THREE.Scene, style: CarStyle = 'hatch') {
+    this.rig = createCar({ color, interior: false, style });
     this.rig.root.visible = false;
     scene.add(this.rig.root);
   }
@@ -132,8 +132,9 @@ export class Actors {
     private collisions: Collisions,
     public settings: ActorSettings,
   ) {
-    this.waiting = new LaneCar(0x7d8b5a, LANE_Z, 1, scene);
-    this.traffic = [0xa7a9ac, 0x253247, 0x8c2f2a].map((c) => new LaneCar(c, OPP_Z, -1, scene));
+    this.waiting = new LaneCar(0x7d8b5a, LANE_Z, 1, scene, 'suv');
+    const styles: CarStyle[] = ['sedan', 'hatch', 'mpv'];
+    this.traffic = [0xa7a9ac, 0x253247, 0x8c2f2a].map((c, i) => new LaneCar(c, OPP_Z, -1, scene, styles[i]));
     this.rider = createCyclist();
     this.rider.root.visible = false;
     scene.add(this.rider.root);

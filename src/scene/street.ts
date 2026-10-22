@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { ROAD } from '../config';
 import type { World } from './world';
-import { createParkedCar } from '../vehicle/carModel';
+import { createParkedCar, type CarStyle } from '../vehicle/carModel';
 import { buildOppositeRow, buildParkingRow, type FreeSpace, type ParkedCar } from './parkingLayout';
+import { addProps } from './props';
 
 // Deterministic pseudo-random, so the street is identical on every reload
 function rng(seed: number) {
@@ -24,19 +25,39 @@ function canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D)
   return t;
 }
 
-function noiseTexture(base: [number, number, number], spread: number, seed: number, size = 512) {
-  const r = rng(seed);
-  return canvasTexture(size, size, (g) => {
-    const img = g.createImageData(size, size);
-    for (let i = 0; i < size * size; i++) {
-      const n = (r() - 0.5) * spread + (r() < 0.02 ? (r() - 0.5) * spread * 2.5 : 0);
-      img.data[i * 4] = base[0] + n;
-      img.data[i * 4 + 1] = base[1] + n;
-      img.data[i * 4 + 2] = base[2] + n;
-      img.data[i * 4 + 3] = 255;
-    }
-    g.putImageData(img, 0, 0);
-  });
+// CC0 textures from Poly Haven (see README credits), 1K, loaded from public/textures/<name>/
+const loader = new THREE.TextureLoader();
+const texCache = new Map<string, THREE.Texture>();
+function phTexture(name: string, map: 'diff' | 'nor' | 'rough') {
+  const key = `${name}/${map}`;
+  let t = texCache.get(key);
+  if (!t) {
+    t = loader.load(`/textures/${key}.jpg`);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = 8;
+    if (map === 'diff') t.colorSpace = THREE.SRGBColorSpace;
+    texCache.set(key, t);
+  }
+  return t;
+}
+
+/** PBR maps of a Poly Haven texture, tiled `rx` × `ry` times (clones share the image). */
+function phMaps(name: string, rx: number, ry: number, which: ('diff' | 'nor' | 'rough')[] = ['diff', 'nor', 'rough']) {
+  const out: Partial<Record<'map' | 'normalMap' | 'roughnessMap', THREE.Texture>> = {};
+  const key = { diff: 'map', nor: 'normalMap', rough: 'roughnessMap' } as const;
+  for (const m of which) {
+    const t = phTexture(name, m).clone();
+    t.repeat.set(rx, ry);
+    out[key[m]] = t;
+  }
+  return out;
+}
+
+/** Body style from the length: short cars are hatchbacks, long ones sedans or MPVs. */
+function styleFor(length: number, i: number): CarStyle {
+  if (length < 4.05) return 'hatch';
+  if (length >= 4.4) return i % 2 ? 'sedan' : 'mpv';
+  return i % 2 ? 'suv' : 'hatch';
 }
 
 export interface Street {
@@ -62,11 +83,9 @@ export function buildStreet(world: World, targetSpaceLength?: number): Street {
   group.add(ground);
 
   // Asphalt
-  const asphaltTex = noiseTexture([58, 60, 63], 26, 7);
-  asphaltTex.repeat.set(L / 6, (2 * curbZ) / 6);
   const road = new THREE.Mesh(
     new THREE.PlaneGeometry(L, curbZ * 2),
-    new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.92, metalness: 0 }),
+    new THREE.MeshStandardMaterial({ ...phMaps('clean_asphalt', L / 4, (2 * curbZ) / 4), color: 0xffffff, roughness: 1, metalness: 0 }),
   );
   road.rotation.x = -Math.PI / 2;
   road.receiveShadow = true;
@@ -89,10 +108,9 @@ export function buildStreet(world: World, targetSpaceLength?: number): Street {
   }
 
   // Sidewalks with curbs
-  const sidewalkTex = noiseTexture([150, 146, 138], 22, 11);
-  sidewalkTex.repeat.set(L / 3, ROAD.sidewalkWidth / 3);
-  const sidewalkMat = new THREE.MeshStandardMaterial({ map: sidewalkTex, roughness: 0.95 });
-  const curbMat = new THREE.MeshStandardMaterial({ color: 0xb8b5ae, roughness: 0.8 });
+  const sidewalkMat = new THREE.MeshStandardMaterial({ ...phMaps('concrete_pavement_02', L / 2, (ROAD.sidewalkWidth - 0.2) / 2), roughness: 1 });
+  // Stone curb: long blocks
+  const curbMat = new THREE.MeshStandardMaterial({ ...phMaps('concrete', L / 1.2, 0.2), color: 0xd8d4cc, roughness: 1 });
   const h = ROAD.curbHeight;
   for (const s of [-1, 1]) {
     const sw = new THREE.Mesh(new THREE.BoxGeometry(L, h, ROAD.sidewalkWidth - 0.2), sidewalkMat);
@@ -109,12 +127,13 @@ export function buildStreet(world: World, targetSpaceLength?: number): Street {
 
   addBuildings(group, world);
   addLamps(group, world);
+  addProps(group, lampPositions());
 
   // Parked cars
   const { cars, spaces } = buildParkingRow(targetSpaceLength);
-  for (const c of cars) group.add(createParkedCar(c.x, c.z, c.length, c.color).root);
+  for (const [i, c] of cars.entries()) group.add(createParkedCar(c.x, c.z, c.length, c.color, 1, styleFor(c.length, i)).root);
   const oppositeCars = buildOppositeRow();
-  for (const c of oppositeCars) group.add(createParkedCar(c.x, c.z, c.length, c.color, -1).root);
+  for (const [i, c] of oppositeCars.entries()) group.add(createParkedCar(c.x, c.z, c.length, c.color, -1, styleFor(c.length, i + 1)).root);
 
   world.scene.add(group);
   return { group, parkedCars: cars, oppositeCars, spaces };
@@ -162,7 +181,13 @@ function addBuildings(group: THREE.Group, world: World) {
       tex.repeat.set(w / 3.5, floors);
       tex.offset.y = -1.0 / 3.2; // ground floor plinth
       tex.needsUpdate = true;
-      const facade = new THREE.MeshStandardMaterial({ color: palette[Math.floor(r() * palette.length)], map: tex, roughness: 0.9 });
+      // Painted plaster: window layout as colour map, plaster relief and roughness from the CC0 texture
+      const facade = new THREE.MeshStandardMaterial({
+        ...phMaps('beige_wall_001', w / 2.5, hgt / 2.5, ['nor', 'rough']),
+        color: palette[Math.floor(r() * palette.length)],
+        map: tex,
+        roughness: 1,
+      });
       const plain = new THREE.MeshStandardMaterial({ color: facade.color, roughness: 0.9 });
       // Box faces: +x, -x, +y, -y, +z, -z. The street-facing side is -z for s=+1 and +z for s=-1.
       const mats = [plain, plain, roofMat, plain, s > 0 ? plain : facade, s > 0 ? facade : plain];
@@ -182,6 +207,15 @@ function addBuildings(group: THREE.Group, world: World) {
   }
 }
 
+/** Street lamp positions on both sidewalks (props are placed between them). */
+export function lampPositions() {
+  const out: { x: number; side: 1 | -1 }[] = [];
+  for (const side of [-1, 1] as const) {
+    for (let x = -ROAD.length / 2 + 10 + (side > 0 ? 0 : 12); x < ROAD.length / 2; x += 26) out.push({ x, side });
+  }
+  return out;
+}
+
 function addLamps(group: THREE.Group, world: World) {
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x2f3337, metalness: 0.6, roughness: 0.5 });
   const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffd9a0, emissiveIntensity: 0 });
@@ -189,17 +223,15 @@ function addLamps(group: THREE.Group, world: World) {
   const pole = new THREE.CylinderGeometry(0.06, 0.08, 6, 10);
   const arm = new THREE.BoxGeometry(0.08, 0.08, 1.4);
   const head = new THREE.BoxGeometry(0.5, 0.1, 0.25);
-  for (const s of [-1, 1]) {
-    for (let x = -ROAD.length / 2 + 10 + (s > 0 ? 0 : 12); x < ROAD.length / 2; x += 26) {
-      const z = s * (ROAD.curbZ + 0.6);
-      const p = new THREE.Mesh(pole, poleMat);
-      p.position.set(x, 3 + ROAD.curbHeight, z);
-      p.castShadow = true;
-      const a = new THREE.Mesh(arm, poleMat);
-      a.position.set(x, 6, z - s * 0.65);
-      const hd = new THREE.Mesh(head, bulbMat);
-      hd.position.set(x, 5.92, z - s * 1.3);
-      group.add(p, a, hd);
-    }
+  for (const { x, side: s } of lampPositions()) {
+    const z = s * (ROAD.curbZ + 0.6);
+    const p = new THREE.Mesh(pole, poleMat);
+    p.position.set(x, 3 + ROAD.curbHeight, z);
+    p.castShadow = true;
+    const a = new THREE.Mesh(arm, poleMat);
+    a.position.set(x, 6, z - s * 0.65);
+    const hd = new THREE.Mesh(head, bulbMat);
+    hd.position.set(x, 5.92, z - s * 1.3);
+    group.add(p, a, hd);
   }
 }
