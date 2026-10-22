@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Nothing leaves the browser: connections only to this site (blocks MediaPipe's usage telemetry) -->
+    <meta http-equiv="Content-Security-Policy" content="connect-src 'self' blob: data:" />
     <title>Glide – simulazione parcheggio</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/src/style.css" />

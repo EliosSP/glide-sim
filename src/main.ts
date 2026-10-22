@@ -22,6 +22,9 @@ import { DemoDirector } from './modes/demo';
 import { Subtitles, TrialIndicator } from './ui/overlay';
 import { Logger, download } from './ui/logger';
 import { bodyToCurb } from './vehicle/collision';
+import { HeadTracker } from './tracking/headTracker';
+import { WebcamHeadSource } from './tracking/headSource';
+import { TrackingPreview } from './tracking/preview';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
@@ -314,6 +317,35 @@ function savePreset() {
 
 gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)');
 
+// --- Head tracking (webcam, all local; only angles are kept). Off by default. Hook 1/3: setup ---
+const tracker = new HeadTracker();
+const trackingPreview = new TrackingPreview();
+const gaze = { follow: false, preview: false };
+const GAZE_MARKS = { deadZone: 3, snapIn: 16, snapOut: 11 }; // degrees, mapping arrives in step 2
+const gazeFolder = gui.addFolder('Sguardo');
+const followCtrl = gazeFolder.add(gaze, 'follow').name('Segui la testa (webcam) (T)').onChange((on: boolean) => setHeadTracking(on));
+gazeFolder.add({ calibrate: () => tracker.calibrate() }, 'calibrate').name('Calibra (Shift+T)');
+gazeFolder.add(gaze, 'preview').name('Mostra anteprima webcam');
+gazeFolder.add(tracker.settings, 'minCutoff', 0.1, 5, 0.1).name('Smoothing minCutoff (Hz)');
+gazeFolder.add(tracker.settings, 'beta', 0, 0.2, 0.005).name('Smoothing beta');
+gazeFolder.add(tracker.settings, 'invertYaw').name('Inverti yaw');
+gazeFolder.add(tracker.settings, 'invertPitch').name('Inverti pitch');
+tracker.onStatus = (s) => {
+  if (s === 'error') {
+    // Permission denied or no camera: back to the keys, no blocking error
+    gaze.follow = false;
+    followCtrl.updateDisplay();
+    flow.notice(`${tracker.error}: uso i tasti Z/X`, nowS());
+  }
+};
+
+function setHeadTracking(on: boolean) {
+  gaze.follow = on;
+  followCtrl.updateDisplay();
+  if (on) void tracker.start(new WebcamHeadSource());
+  else tracker.stop();
+}
+
 function setScenario(sc: Scenario) {
   applyScenario(sc);
   resetAll();
@@ -496,6 +528,8 @@ keys.on('KeyH', () => hud.toggle());
 keys.on('KeyE', () => blinker('right'));
 keys.on('KeyQ', () => blinker('left'));
 keys.on('KeyL', () => exportLog());
+// Head tracking: T on/off, Shift+T recalibrate
+keys.on('KeyT', () => (keys.isDown('ShiftLeft') || keys.isDown('ShiftRight') ? tracker.calibrate() : setHeadTracking(!gaze.follow)));
 
 function blinker(side: 'left' | 'right') {
   flow.onBlinker(side, car, nowS());
@@ -658,6 +692,10 @@ function frame(time: number) {
   bars.left.draw(out.bars.left, now);
   bars.right.draw(out.bars.right, now);
   logFrame(now);
+  // Head tracking, hook 2/3: pose update and preview (full preview never in test mode)
+  tracker.update();
+  const showPreview = gaze.preview || tracker.status === 'calibrating' || tracker.status === 'starting' || tracker.status === 'error';
+  trackingPreview.draw(tracker, session.testMode ? 'dot' : showPreview && tracker.status !== 'off' ? 'full' : 'none', GAZE_MARKS, null);
   lastBarViews = out.bars;
   showPath(flow.maneuver?.plan ?? null);
 
@@ -821,5 +859,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { tracker, gaze, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);
