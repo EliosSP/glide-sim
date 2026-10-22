@@ -25,6 +25,8 @@ import { bodyToCurb } from './vehicle/collision';
 import { HeadTracker } from './tracking/headTracker';
 import { WebcamHeadSource } from './tracking/headSource';
 import { TrackingPreview } from './tracking/preview';
+import { DEFAULT_MAPPING, INITIAL_MAPPING_STATE, mapHead, type MirrorGlance } from './tracking/headMapping';
+import { CalibrationGuide } from './tracking/calibration';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
@@ -321,11 +323,26 @@ gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)')
 const tracker = new HeadTracker();
 const trackingPreview = new TrackingPreview();
 const gaze = { follow: false, preview: false };
-const GAZE_MARKS = { deadZone: 3, snapIn: 16, snapOut: 11 }; // degrees, mapping arrives in step 2
+const mapping = { ...DEFAULT_MAPPING }; // [to be tuned with real users]
+let mappingState = INITIAL_MAPPING_STATE;
+let glanceSource: 'head' | 'key' | null = null;
+const calibration = new CalibrationGuide(tracker, mapping);
+const gazeMessage = Object.assign(document.createElement('div'), { className: 'gaze-message hidden' });
+document.body.append(gazeMessage);
 const gazeFolder = gui.addFolder('Sguardo');
 const followCtrl = gazeFolder.add(gaze, 'follow').name('Segui la testa (webcam) (T)').onChange((on: boolean) => setHeadTracking(on));
-gazeFolder.add({ calibrate: () => tracker.calibrate() }, 'calibrate').name('Calibra (Shift+T)');
+gazeFolder.add({ calibrate: () => calibration.start() }, 'calibrate').name('Calibra (Shift+T)');
 gazeFolder.add(gaze, 'preview').name('Mostra anteprima webcam');
+gazeFolder.add(mapping, 'deadZone', 0, 10, 0.5).name('Zona morta (°)');
+gazeFolder.add(mapping, 'gainYaw', 1, 8, 0.1).name('Guadagno yaw');
+gazeFolder.add(mapping, 'gainPitch', 1, 6, 0.1).name('Guadagno pitch');
+gazeFolder.add(mapping, 'snapIn', 6, 35, 0.5).name('Scatto laterale: ingresso (°)').listen();
+gazeFolder.add(mapping, 'snapOut', 2, 30, 0.5).name('Scatto laterale: uscita (°)').listen();
+gazeFolder.add(mapping, 'snapDelay', 0, 500, 10).name('Tempo minimo scatto (ms)');
+gazeFolder.add(mapping, 'rearEnabled').name('Scatto retrovisore');
+gazeFolder.add(mapping, 'rearPitch', 4, 25, 0.5).name('Retrovisore: pitch (°)');
+gazeFolder.add(mapping, 'rearYawMin', -20, 10, 0.5).name('Retrovisore: yaw min (°)');
+gazeFolder.add(mapping, 'rearYawMax', 0, 25, 0.5).name('Retrovisore: yaw max (°)');
 gazeFolder.add(tracker.settings, 'minCutoff', 0.1, 5, 0.1).name('Smoothing minCutoff (Hz)');
 gazeFolder.add(tracker.settings, 'beta', 0, 0.2, 0.005).name('Smoothing beta');
 gazeFolder.add(tracker.settings, 'invertYaw').name('Inverti yaw');
@@ -342,8 +359,13 @@ tracker.onStatus = (s) => {
 function setHeadTracking(on: boolean) {
   gaze.follow = on;
   followCtrl.updateDisplay();
-  if (on) void tracker.start(new WebcamHeadSource());
-  else tracker.stop();
+  if (on) {
+    void tracker.start(new WebcamHeadSource());
+    calibration.start();
+  } else {
+    tracker.stop();
+    calibration.cancel();
+  }
 }
 
 function setScenario(sc: Scenario) {
@@ -529,7 +551,8 @@ keys.on('KeyE', () => blinker('right'));
 keys.on('KeyQ', () => blinker('left'));
 keys.on('KeyL', () => exportLog());
 // Head tracking: T on/off, Shift+T recalibrate
-keys.on('KeyT', () => (keys.isDown('ShiftLeft') || keys.isDown('ShiftRight') ? tracker.calibrate() : setHeadTracking(!gaze.follow)));
+keys.on('KeyT', () => (keys.isDown('ShiftLeft') || keys.isDown('ShiftRight') ? calibration.start() : setHeadTracking(!gaze.follow)));
+keys.on('KeyY', () => calibration.acceptSuggestion());
 
 function blinker(side: 'left' | 'right') {
   flow.onBlinker(side, car, nowS());
@@ -674,11 +697,26 @@ function frame(time: number) {
 
   poseCar(rig, car.x, car.z, car.heading, car.steer, car.wheelSpin, car.steeringWheelDeg);
   rig.root.updateMatrixWorld();
+  // Head tracking, hook 2/3: view direction and mirror snaps (a held Z/X/W key always wins)
+  tracker.update();
+  const keyGlance: MirrorGlance | null = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
+  if (demo.active) {
+    views.headLook = null;
+    views.glance = demoGlance;
+    glanceSource = null;
+  } else if (tracker.active) {
+    const m = mapHead({ yaw: tracker.yaw, pitch: tracker.pitch, tracking: tracker.status === 'tracking', key: keyGlance, now: performance.now() }, mappingState, mapping);
+    mappingState = m.state;
+    views.headLook = { yaw: m.yaw, pitch: m.pitch };
+    views.glance = m.glance;
+    glanceSource = m.source;
+  } else {
+    views.headLook = null;
+    views.glance = keyGlance;
+    glanceSource = keyGlance ? 'key' : null;
+  }
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
-  views.glance = demo.active
-    ? demoGlance
-    : keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
   subtitles.set(demo.active ? subtitleText : null, world.renderer.domElement.getBoundingClientRect());
 
   const now = nowS();
@@ -692,10 +730,12 @@ function frame(time: number) {
   bars.left.draw(out.bars.left, now);
   bars.right.draw(out.bars.right, now);
   logFrame(now);
-  // Head tracking, hook 2/3: pose update and preview (full preview never in test mode)
-  tracker.update();
-  const showPreview = gaze.preview || tracker.status === 'calibrating' || tracker.status === 'starting' || tracker.status === 'error';
-  trackingPreview.draw(tracker, session.testMode ? 'dot' : showPreview && tracker.status !== 'off' ? 'full' : 'none', GAZE_MARKS, null);
+  // Head tracking, hook 3/3: calibration guide and preview (full preview never in test mode)
+  const calibMsg = tracker.active ? calibration.update(views.glance === 'display' ? null : views.glance) : null;
+  gazeMessage.textContent = calibMsg ?? '';
+  gazeMessage.classList.toggle('hidden', !calibMsg || demo.active);
+  const showPreview = gaze.preview || calibration.active || tracker.status === 'starting' || tracker.status === 'error';
+  trackingPreview.draw(tracker, session.testMode ? 'dot' : showPreview && tracker.status !== 'off' ? 'full' : 'none', mapping, null);
   lastBarViews = out.bars;
   showPath(flow.maneuver?.plan ?? null);
 
@@ -859,5 +899,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { tracker, gaze, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { tracker, gaze, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

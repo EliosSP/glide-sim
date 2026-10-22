@@ -35,3 +35,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   background: #7d858c; pointer-events: none;
 }
 .head-dot.on { background: #4fd16b; }
+.gaze-message {
+  position: fixed; left: 50%; top: 18%; transform: translateX(-50%); max-width: 70vw;
+  padding: 12px 18px; border-radius: 8px; text-align: center; pointer-events: none; z-index: 6;
+  font: 500 20px/1.35 -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #fff;
+  background: rgba(10, 14, 18, 0.72);
+}

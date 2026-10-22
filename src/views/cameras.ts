@@ -12,6 +12,7 @@ export const DRIVER_FOV = 78; // vertical, wider than default so both A-pillars 
 const GLANCE_FOV = 30; // looking at a mirror narrows the view, like focusing on it (a monitor has far less resolution than the eye)
 const DISPLAY_FOV = 24; // demo close-up of the central display
 const HEAD_SPEED = 9; // 1/s, head-turn smoothing
+const HEAD_SPEED_TRACKED = 30; // 1/s, following the tracked head (already filtered): low latency
 export type Glance = 'left' | 'right' | 'rear' | 'display' | null; // 'display': used by the demo
 
 const _m = new THREE.Vector3();
@@ -28,6 +29,8 @@ export class Views {
   /** Demo: narrower field while glancing (zoom on a mirror), and outside close-up of a mirror in the chase view. */
   glanceZoom: number | null = null;
   closeUp: 'left' | 'right' | null = null;
+  /** Head tracking: view direction from the webcam (replaces the mouse while set). */
+  headLook: { yaw: number; pitch: number } | null = null;
 
   private head = new THREE.Object3D();
   // Mouse-controlled head direction, and the smoothed direction actually shown
@@ -80,8 +83,8 @@ export class Views {
   }
 
   private updateHead(dt: number) {
-    const target = this.glance ? this.glanceAngles[this.glance] : { yaw: this.yaw, pitch: this.pitch };
-    const a = 1 - Math.exp(-dt * HEAD_SPEED);
+    const target = this.glance ? this.glanceAngles[this.glance] : this.headLook ?? { yaw: this.yaw, pitch: this.pitch };
+    const a = 1 - Math.exp(-dt * (this.headLook && !this.glance ? HEAD_SPEED_TRACKED : HEAD_SPEED));
     this.curYaw += (target.yaw - this.curYaw) * a;
     this.curPitch += (target.pitch - this.curPitch) * a;
     this.driver.rotation.set(this.curPitch, -Math.PI / 2 + this.curYaw, 0);
