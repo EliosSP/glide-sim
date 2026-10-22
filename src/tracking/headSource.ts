@@ -1,4 +1,5 @@
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { poseFromMatrix } from './headPose';
 
 /** One head-pose measurement, raw (not calibrated). Degrees: yaw > 0 head turned right, pitch > 0 up. */
 export interface HeadSample {
@@ -18,7 +19,6 @@ export interface HeadSource {
   readonly video: HTMLVideoElement | null;
 }
 
-const DEG = 180 / Math.PI;
 const DETECT_HZ = 30;
 
 /**
@@ -27,6 +27,10 @@ const DETECT_HZ = 30;
  */
 export class WebcamHeadSource implements HeadSource {
   video: HTMLVideoElement | null = null;
+  /** Average time of one detection (ms) and detections per second, for the latency estimate. */
+  stats = { detectMs: 0, rate: 0 };
+  private count = 0;
+  private countSince = 0;
   private landmarker: FaceLandmarker | null = null;
   private stream: MediaStream | null = null;
   private timer: number | null = null;
@@ -76,26 +80,17 @@ export class WebcamHeadSource implements HeadSource {
     this.lastVideoTime = v.currentTime;
     const now = performance.now();
     const res = this.landmarker.detectForVideo(v, now);
+    const took = performance.now() - now;
+    this.stats.detectMs = this.stats.detectMs ? this.stats.detectMs * 0.9 + took * 0.1 : took;
+    this.count++;
+    if (now - this.countSince >= 1000) {
+      this.stats.rate = (this.count * 1000) / (now - this.countSince);
+      this.count = 0;
+      this.countSince = now;
+    }
     const m = res.facialTransformationMatrixes?.[0];
     if (m) this.latest = { ...poseFromMatrix(m.data), t: now };
   }
-}
-
-/**
- * Head angles from the face transformation matrix (4×4, column-major, camera space:
- * x right in the raw camera image, y up, z towards the viewer). The face's forward axis is the
- * third column. The raw image is not mirrored: the user's right is the camera's −x.
- */
-export function poseFromMatrix(d: ArrayLike<number>) {
-  const r = (row: number, col: number) => d[col * 4 + row];
-  const fx = r(0, 2);
-  const fy = r(1, 2);
-  const fz = r(2, 2);
-  return {
-    yaw: -Math.atan2(fx, fz) * DEG, // turning right moves the nose towards the camera's −x
-    pitch: Math.asin(Math.max(-1, Math.min(1, fy))) * DEG,
-    roll: Math.atan2(r(1, 0), r(0, 0)) * DEG,
-  };
 }
 
 /** Scripted head motion (tests, fixed-step mode): angles as a function of time. */

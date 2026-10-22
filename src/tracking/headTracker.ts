@@ -10,7 +10,8 @@ export interface TrackerSettings {
   invertPitch: boolean;
 }
 
-export const DEFAULT_TRACKER: TrackerSettings = { minCutoff: 1.0, beta: 0.02, invertYaw: false, invertPitch: false };
+// From the first driving test: a bit more reactive than the classic 1.0 / 0.02
+export const DEFAULT_TRACKER: TrackerSettings = { minCutoff: 1.2, beta: 0.18, invertYaw: false, invertPitch: false };
 
 const LOST_AFTER = 500; // ms without a face
 const CALIBRATION = 1500; // ms looking straight ahead

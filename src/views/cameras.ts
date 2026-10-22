@@ -95,6 +95,16 @@ export class Views {
     }
   }
 
+  /** Current (smoothed) view direction and the mirror directions, for gaze logging. */
+  get look() {
+    return { yaw: this.curYaw, pitch: this.curPitch };
+  }
+
+  get mirrorDirections() {
+    const { left, right, rear } = this.glanceAngles;
+    return { left, right, rear };
+  }
+
   cycle() {
     this.current = ORDER[(ORDER.indexOf(this.current) + 1) % ORDER.length];
   }

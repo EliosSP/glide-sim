@@ -32,6 +32,8 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 | Spazio | freno forte |
 | Z / X (tieni premuto) | guarda lo specchietto sinistro / destro (la testa si gira e la vista si stringe) |
 | W (tieni premuto) | guarda il retrovisore interno |
+| T / Shift+T | segui la testa con la webcam (on/off) / ricalibra |
+| Y | durante la calibrazione: accetta la soglia di scatto suggerita |
 | Q / E | freccia sinistra / destra (a destra valuta lo spazio evidenziato) |
 | P | pulsante Park Assist (di nuovo: annulla; in autonomo frena e restituisce il controllo) |
 | 1 / 2 | sul display: Assistito / Autonomo |
@@ -104,13 +106,31 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 
 `?test=1` (o pannello → Sessione di test → Modalità test): HUD, aiuto, traiettoria e pannello nascosti, vista posto guida. In basso a sinistra un indicatore discreto con ID partecipante e numero di prova (tasto I per nasconderlo). L'ID si inserisce nel pannello (G); la prova aumenta a ogni reset (Esc, Backspace, N). Lo schermo intero va attivato con F, perché il browser non lo permette senza un gesto dell'utente.
 
+## Sguardo con la webcam
+
+Con una normale webcam la rotazione della testa gira la visuale del posto guida, così guardare gli specchietti viene naturale invece di tenere premuto Z/X. Si segue **la testa, non gli occhi** (il tracciamento dello sguardo da webcam è troppo impreciso). Spento di default: **T** (o pannello → Sguardo → "Segui la testa") lo accende.
+
+- **Calibrazione** (parte da sola, o Shift+T): "Guarda dritto davanti a te" per 1,5 s (quella posizione diventa lo zero), poi gira la testa verso lo specchietto sinistro e destro. Con gli scatti attivi, se uno non scatta Glide propone una soglia più bassa (Y per accettarla).
+- **Mappatura** (default dalla prima prova di guida, tutti nel pannello → Sguardo, da tarare con utenti veri): zona morta 0,5°, guadagno yaw ×4,3 e pitch ×2 (piccoli movimenti della testa girano di molto la visuale), smoothing One Euro minCutoff 1,2 / beta 0,18. La visuale segue la testa in modo continuo.
+- **Scatto sugli specchietti** (opzione, spenta): oltre ±16° di yaw la visuale scatta sullo specchietto come con Z/X, con isteresi (si rilascia sotto ±11°) e tempo minimo 120 ms; testa in su di 10° (yaw tra −4° e +14°) per il retrovisore.
+- **Priorità:** un tasto Z/X/W premuto vince sempre; con il tracciamento acceso il trascinamento del mouse non conta. Se il volto non si vede per più di 0,5 s la visuale torna lentamente al centro.
+- Anteprima webcam (pannello → "Mostra anteprima webcam") con angoli e soglie; compare da sola durante la calibrazione. In modalità test mai: solo un puntino in basso a destra (verde = tracciato, grigio = perso).
+- Permesso negato o webcam assente: compare un messaggio e restano i tasti, niente di bloccante.
+- **Avvio:** `getUserMedia` funziona su `localhost` (`npm run dev`) e sul sito pubblicato (https).
+
+**Privacy.** L'immagine della webcam è elaborata solo nel browser (MediaPipe Face Landmarker, modello e WASM in `public/mediapipe/`, nessun CDN: funziona anche offline). Nessun fotogramma viene salvato o trasmesso: si conservano solo gli angoli della testa. MediaPipe di suo invierebbe statistiche d'uso a Google (tipo di task e tempi, senza immagini): una Content Security Policy in `index.html` permette connessioni solo verso il sito stesso e le blocca.
+
+**Prestazioni** (misurate sul Mac di sviluppo, webcam simulata di Chrome): 60 fps con tracciamento spento e acceso, in qualità alta e bassa; rilevamento 5–6 ms a 30 Hz. Con un volto vero il rilevamento può costare un po' di più: l'HUD mostra tempo e frequenza reali. Latenza stimata testa → visuale: attesa del rilevamento ~17 ms (max 33) + rilevamento ~6 ms + smoothing della visuale ~33 ms + un frame ~17 ms ≈ 75 ms, più la latenza della webcam (30–50 ms tipici, non misurabile qui): ≈ 100–120 ms in totale.
+
+**Test:** `npm test` (vitest) verifica zona morta, guadagno, isteresi, tempo minimo, priorità dei tasti, sguardo dalla direzione della visuale, segni di yaw e pitch e il filtro.
+
 ## Log per i test
 
 Il log è sempre attivo (pannello → Sessione di test → Log attivo), tranne durante la demo. Resta in memoria e in `localStorage`: un reload non perde i dati e la numerazione delle prove continua. "Esporta CSV" (o L) scarica due file, `glide_<partecipante>_<data>_events.csv` e `..._summary.csv`. "Nuova sessione…" (con conferma) svuota il log.
 
-**events.csv**, una riga per evento: `session_id, participant_id, trial, t_ms` (dall'inizio della prova, orologio di simulazione), `event, phase, side, value, extra_json`. Eventi: `trial_start, approach, space_evaluated, park_button, park_active, mode_chosen, phase, confirm, point_reached, over, steer_error` (value = errore in frazione dell'escursione), `contact, preview_shown, auto_start, takeover, low_confidence, trajectory_change, switch_to_assisted, manual, cancel, done, auto_done, glance` (Z/X/W: start/end con durata, proxy dello sguardo), `reset`.
+**events.csv**, una riga per evento: `session_id, participant_id, trial, t_ms` (dall'inizio della prova, orologio di simulazione), `event, phase, side, value, extra_json`. Eventi: `trial_start, approach, space_evaluated, park_button, park_active, mode_chosen, phase, confirm, point_reached, over, steer_error` (value = errore in frazione dell'escursione), `contact, preview_shown, auto_start, takeover, low_confidence, trajectory_change, switch_to_assisted, manual, cancel, done, auto_done`, `glance_start` / `glance_end` (side = specchietto, value = fonte `head` o `key`, extra = schermata, specchietti accesi in quel momento e, alla fine, durata; con la testa in modo continuo lo sguardo conta quando la visuale punta entro 12° da uno specchietto, parametro, e ci resta almeno 150 ms: uno specchietto solo attraversato non conta), `tracking_calibrated` (con i parametri di mappatura), `tracking_lost`, `tracking_recovered`, `reset`.
 
-**summary.csv**, una riga per prova: esito (`done` / `cancel` / `reset` / `in_corso`), modalità, tempo totale e per fase dell'assistito, durata dell'autonomo, numero di "oltre", errori di sterzo (%) e media, contatti, distanze finali da cordolo, auto davanti e dietro (cm), prese di controllo, passaggi all'assistito, annullamenti, sguardi, tutti i parametri attivi (`params_json`).
+**summary.csv**, una riga per prova: esito (`done` / `cancel` / `reset` / `in_corso`), modalità, tempo totale e per fase dell'assistito, durata dell'autonomo, numero di "oltre", errori di sterzo (%) e media, contatti, distanze finali da cordolo, auto davanti e dietro (cm), prese di controllo, passaggi all'assistito, annullamenti, sguardi (totali e dalla testa), tempo di retro e **quota del tempo di retro passata guardando lo specchietto acceso**, volte in cui il volto è stato perso, tutti i parametri attivi (`params_json`, compresa la mappatura dello sguardo).
 
 ## Parametri URL
 

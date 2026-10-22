@@ -25,7 +25,7 @@ import { bodyToCurb } from './vehicle/collision';
 import { HeadTracker } from './tracking/headTracker';
 import { WebcamHeadSource } from './tracking/headSource';
 import { TrackingPreview } from './tracking/preview';
-import { DEFAULT_MAPPING, INITIAL_MAPPING_STATE, mapHead, type MirrorGlance } from './tracking/headMapping';
+import { DEFAULT_MAPPING, INITIAL_MAPPING_STATE, mapHead, mirrorInView, type MirrorGlance } from './tracking/headMapping';
 import { CalibrationGuide } from './tracking/calibration';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
@@ -322,7 +322,7 @@ gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)')
 // --- Head tracking (webcam, all local; only angles are kept). Off by default. Hook 1/3: setup ---
 const tracker = new HeadTracker();
 const trackingPreview = new TrackingPreview();
-const gaze = { follow: false, preview: false };
+const gaze = { follow: false, preview: false, mirrorTolerance: 12 }; // ° view-to-mirror to log a glance
 const mapping = { ...DEFAULT_MAPPING }; // [to be tuned with real users]
 let mappingState = INITIAL_MAPPING_STATE;
 let glanceSource: 'head' | 'key' | null = null;
@@ -336,9 +336,11 @@ gazeFolder.add(gaze, 'preview').name('Mostra anteprima webcam');
 gazeFolder.add(mapping, 'deadZone', 0, 10, 0.5).name('Zona morta (°)');
 gazeFolder.add(mapping, 'gainYaw', 1, 8, 0.1).name('Guadagno yaw');
 gazeFolder.add(mapping, 'gainPitch', 1, 6, 0.1).name('Guadagno pitch');
-gazeFolder.add(mapping, 'snapIn', 6, 35, 0.5).name('Scatto laterale: ingresso (°)').listen();
-gazeFolder.add(mapping, 'snapOut', 2, 30, 0.5).name('Scatto laterale: uscita (°)').listen();
-gazeFolder.add(mapping, 'snapDelay', 0, 500, 10).name('Tempo minimo scatto (ms)');
+gazeFolder.add(gaze, 'mirrorTolerance', 3, 25, 1).name('Sguardo registrato entro (°)');
+gazeFolder.add(mapping, 'snapEnabled').name('Scatto sugli specchietti');
+gazeFolder.add(mapping, 'snapIn', 6, 45, 0.5).name('Scatto laterale: ingresso (°)').listen();
+gazeFolder.add(mapping, 'snapOut', 2, 40, 0.5).name('Scatto laterale: uscita (°)').listen();
+gazeFolder.add(mapping, 'snapDelay', 0, 1000, 10).name('Tempo minimo scatto (ms)');
 gazeFolder.add(mapping, 'rearEnabled').name('Scatto retrovisore');
 gazeFolder.add(mapping, 'rearPitch', 4, 25, 0.5).name('Retrovisore: pitch (°)');
 gazeFolder.add(mapping, 'rearYawMin', -20, 10, 0.5).name('Retrovisore: yaw min (°)');
@@ -347,7 +349,11 @@ gazeFolder.add(tracker.settings, 'minCutoff', 0.1, 5, 0.1).name('Smoothing minCu
 gazeFolder.add(tracker.settings, 'beta', 0, 0.2, 0.005).name('Smoothing beta');
 gazeFolder.add(tracker.settings, 'invertYaw').name('Inverti yaw');
 gazeFolder.add(tracker.settings, 'invertPitch').name('Inverti pitch');
-tracker.onStatus = (s) => {
+tracker.onStatus = (s, prev) => {
+  const now = nowS();
+  if (s === 'lost') logger.log(now, 'tracking_lost', { phase: flow.maneuver?.phase ?? flow.screen });
+  if (s === 'tracking' && prev === 'lost') logger.log(now, 'tracking_recovered', { phase: flow.maneuver?.phase ?? flow.screen });
+  if (s === 'tracking' && prev === 'calibrating') logger.log(now, 'tracking_calibrated', { extra: { mapping: { ...mapping }, tracker: { ...tracker.settings }, mirrorTolerance: gaze.mirrorTolerance } });
   if (s === 'error') {
     // Permission denied or no camera: back to the keys, no blocking error
     gaze.follow = false;
@@ -356,11 +362,19 @@ tracker.onStatus = (s) => {
   }
 };
 
+/** Detection time and rate of the webcam source, for the latency estimate. */
+function headStats() {
+  const src = headSource;
+  return src ? ` · rilevamento ${src.stats.detectMs.toFixed(1)} ms a ${src.stats.rate.toFixed(0)} Hz` : '';
+}
+let headSource: WebcamHeadSource | null = null;
+
 function setHeadTracking(on: boolean) {
   gaze.follow = on;
   followCtrl.updateDisplay();
   if (on) {
-    void tracker.start(new WebcamHeadSource());
+    headSource = new WebcamHeadSource();
+    void tracker.start(headSource);
     calibration.start();
   } else {
     tracker.stop();
@@ -437,6 +451,7 @@ function trialParams() {
     quality: params.quality,
     volume: audio.volume,
     testMode: session.testMode,
+    headTracking: gaze.follow ? { mapping: { ...mapping }, tracker: { ...tracker.settings }, mirrorTolerance: gaze.mirrorTolerance } : false,
   };
 }
 
@@ -729,6 +744,7 @@ function frame(time: number) {
   bars.left.painter.style = bars.right.painter.style = auto ? autoBarStyle : barStyle;
   bars.left.draw(out.bars.left, now);
   bars.right.draw(out.bars.right, now);
+  frameDt = dt;
   logFrame(now);
   // Head tracking, hook 3/3: calibration guide and preview (full preview never in test mode)
   const calibMsg = tracker.active ? calibration.update(views.glance === 'display' ? null : views.glance) : null;
@@ -783,6 +799,9 @@ function frame(time: number) {
     `Scenario  ${actorSettings.scenario === 'busy' ? 'Animato' : 'Vuoto'}`,
     `Contatti  ${contacts}${inContact ? `  ⚠ contatto con ${CONTACT_LABEL[inContact]}` : ''}`,
     ...assistHud(),
+    ...(tracker.active
+      ? [`Testa     ${tracker.status} · yaw ${tracker.yaw.toFixed(1)}° pitch ${tracker.pitch.toFixed(1)}°${headStats()}`]
+      : []),
     `FPS       ${fps.toFixed(0)}${autoDowngraded ? ' (qualità bassa automatica)' : ''}`,
     gearMsg,
   ]);
@@ -818,14 +837,58 @@ function logFrame(now: number) {
     logger.setOutcome('done');
     logger.log(now, 'done', { phase: 'done', value: r.seconds, extra: { curbGap: r.curbGap, frontGap: r.frontGap, rearGap: r.rearGap, overs: r.overs } });
   } else if (!r) loggedDone = false;
-  // Z/X/W: start and end of each look at a mirror (a proxy of the gaze, which is filmed separately)
-  const g = demo.active ? null : views.glance;
-  if (g !== loggedGlance) {
-    if (loggedGlance) logger.log(now, 'glance', { phase: flow.maneuver?.phase ?? flow.screen, side: loggedGlance, value: 'end', extra: { s: Math.round((now - glanceStart) * 100) / 100 } });
-    if (g) logger.log(now, 'glance', { phase: flow.maneuver?.phase ?? flow.screen, side: g, value: 'start' });
+  // Mirror glances (a proxy of the gaze, which is filmed separately): from the keys, the head snaps,
+  // or, with the continuous head view, from where the view points
+  const gz = settledGaze(gazeTarget(), now);
+  const g = gz?.side ?? null;
+  const phase = flow.maneuver?.phase ?? flow.screen;
+  if (g !== loggedGlance || (gz && gz.source !== loggedGlanceSource)) {
+    const ctx = { screen: flow.screen, lit: litMirrors() };
+    if (loggedGlance) logger.log(now, 'glance_end', { phase, side: loggedGlance, value: loggedGlanceSource ?? '', extra: { s: Math.round((now - glanceStart) * 100) / 100, ...ctx } });
+    if (gz) logger.log(gz.since, 'glance_start', { phase, side: gz.side, value: gz.source, extra: ctx });
     loggedGlance = g;
-    glanceStart = now;
+    loggedGlanceSource = gz?.source ?? null;
+    glanceStart = gz?.since ?? now;
   }
+  // Time spent reversing, and the share of it looking at the lit mirror
+  if (car.speed < -0.05 && (flow.screen === 'assisted' || flow.screen === 'autoRunning')) {
+    logger.accumulate('reverse_s', frameDt);
+    if (g && (g === 'left' || g === 'right') && litMirrors().includes(g)) logger.accumulate('reverse_on_lit_mirror_s', frameDt);
+  }
+}
+
+let loggedGlanceSource: 'head' | 'key' | null = null;
+let gazeCandidate: { side: MirrorGlance; source: 'head' | 'key'; since: number } | null = null;
+const GAZE_DWELL = 0.15; // s: the head-driven view must rest on a mirror this long (not just sweep past it)
+
+/** Keys and snaps count at once; a mirror merely crossed by the continuous head view does not. */
+function settledGaze(t: { side: MirrorGlance; source: 'head' | 'key' } | null, now: number) {
+  if (!t) {
+    gazeCandidate = null;
+    return null;
+  }
+  if (!gazeCandidate || gazeCandidate.side !== t.side || gazeCandidate.source !== t.source) gazeCandidate = { ...t, since: now };
+  const continuous = t.source === 'head' && !views.glance;
+  if (continuous && now - gazeCandidate.since < GAZE_DWELL) return loggedGlance ? { side: loggedGlance as MirrorGlance, source: loggedGlanceSource ?? 'head', since: glanceStart } : null;
+  return gazeCandidate;
+}
+let frameDt = 0;
+
+/** What the driver is looking at: Z/X/W or a head snap, else the mirror the head-driven view points to. */
+function gazeTarget(): { side: MirrorGlance; source: 'head' | 'key' } | null {
+  if (demo.active) return null;
+  const g = views.glance;
+  if (g && g !== 'display') return { side: g, source: glanceSource ?? 'key' };
+  if (!views.headLook || tracker.status !== 'tracking') return null;
+  const side = mirrorInView(views.look, views.mirrorDirections, gaze.mirrorTolerance);
+  return side ? { side, source: 'head' } : null;
+}
+
+/** Mirrors with a lit bar right now (the pre-announcement counts as not lit). */
+function litMirrors(): ('left' | 'right')[] {
+  const b = lastBarViews;
+  if (!b) return [];
+  return (['left', 'right'] as const).filter((s) => b[s].kind !== 'off' && b[s].kind !== 'announce');
 }
 
 function assistHud(): string[] {
@@ -899,5 +962,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { tracker, gaze, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { tracker, gaze, getHeadSource: () => headSource, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

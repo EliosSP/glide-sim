@@ -26,6 +26,7 @@ interface Trial {
   params: Record<string, unknown>;
   outcome: Outcome | null;
   endT: number | null;
+  metrics?: Record<string, number>; // accumulated per frame (e.g. time reversing)
 }
 
 const STORAGE_KEY = 'glide-log-v1';
@@ -90,6 +91,14 @@ export class Logger {
       extra_json: f.extra ? JSON.stringify(f.extra) : '',
     });
     this.scheduleSave();
+  }
+
+  /** Adds time (or any amount) to a per-trial metric, stored with the trial (cheap, no event row). */
+  accumulate(key: string, amount: number) {
+    const t = this.current;
+    if (!this.enabled || !t || t.endT !== null) return;
+    t.metrics ??= {};
+    t.metrics[key] = (t.metrics[key] ?? 0) + amount;
   }
 
   /** Participant ID changed during the current trial (typed after loading the page). */
@@ -160,7 +169,11 @@ export class Logger {
       takeovers: count('takeover'),
       switch_to_assisted: count('switch_to_assisted'),
       cancels: count('cancel'),
-      glances: ev.filter((e) => e.event === 'glance' && e.value === 'start').length,
+      glances: count('glance_start'),
+      glances_head: ev.filter((e) => e.event === 'glance_start' && e.value === 'head').length,
+      reverse_s: round1(t.metrics?.reverse_s ?? 0),
+      reverse_on_lit_mirror_pct: t.metrics?.reverse_s ? Math.round(((t.metrics.reverse_on_lit_mirror_s ?? 0) / t.metrics.reverse_s) * 100) : '',
+      tracking_lost: count('tracking_lost'),
       params_json: JSON.stringify(t.params),
     };
   }

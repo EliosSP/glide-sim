@@ -13,6 +13,7 @@ export interface MappingParams {
   deadZone: number; // ° (both axes)
   gainYaw: number;
   gainPitch: number;
+  snapEnabled: boolean; // off: the view only follows the head continuously
   snapIn: number; // ° |yaw| to snap onto a side mirror
   snapOut: number; // ° |yaw| below which the snap is released (hysteresis)
   snapDelay: number; // ms the head must stay past the threshold
@@ -22,10 +23,13 @@ export interface MappingParams {
   rearYawMax: number;
 }
 
+// Defaults from the first driving test (22/10/2026): continuous view, snaps off.
+// Snap values are the starting points to use when snaps are switched on. [to be tuned with real users]
 export const DEFAULT_MAPPING: MappingParams = {
-  deadZone: 3,
-  gainYaw: 4,
+  deadZone: 0.5,
+  gainYaw: 4.3,
   gainPitch: 2,
+  snapEnabled: false,
   snapIn: 16,
   snapOut: 11,
   snapDelay: 120,
@@ -72,6 +76,7 @@ export function shape(angle: number, dead: number, gain: number) {
 
 /** Which mirror the head points at past the entry thresholds (null: none). */
 function candidate(yaw: number, pitch: number, p: MappingParams): MirrorGlance | null {
+  if (!p.snapEnabled) return null;
   if (p.rearEnabled && pitch >= p.rearPitch && yaw >= p.rearYawMin && yaw <= p.rearYawMax) return 'rear';
   if (yaw >= p.snapIn) return 'right';
   if (yaw <= -p.snapIn) return 'left';
@@ -95,8 +100,8 @@ export function mapHead(input: MappingInput, state: MappingState, p: MappingPara
   if (!input.tracking) return { yaw, pitch, glance: null, source: null, state: { glance: null, pending: null, pendingSince: 0 } };
 
   let { glance, pending, pendingSince } = state;
-  // Release: below the exit threshold
-  if (glance && !holds(glance, input.yaw, input.pitch, p)) glance = null;
+  // Release: below the exit threshold (or snaps switched off)
+  if (glance && (!p.snapEnabled || !holds(glance, input.yaw, input.pitch, p))) glance = null;
   // Snap: a (different) candidate past the entry threshold for at least snapDelay
   const c = candidate(input.yaw, input.pitch, p);
   if (c && c !== glance) {
@@ -112,6 +117,27 @@ export function mapHead(input: MappingInput, state: MappingState, p: MappingPara
     pending = null;
   }
   return { yaw, pitch, glance, source: glance ? 'head' : null, state: { glance, pending, pendingSince } };
+}
+
+/**
+ * Which mirror the view direction points at (Views convention, radians), within `tolDeg`:
+ * used to log glances when the view follows the head continuously, without snaps.
+ */
+export function mirrorInView(
+  view: { yaw: number; pitch: number },
+  mirrors: Partial<Record<MirrorGlance, { yaw: number; pitch: number }>>,
+  tolDeg: number,
+): MirrorGlance | null {
+  let best: MirrorGlance | null = null;
+  let bestD = tolDeg * DEG;
+  for (const [k, m] of Object.entries(mirrors) as [MirrorGlance, { yaw: number; pitch: number }][]) {
+    const d = Math.hypot(view.yaw - m.yaw, view.pitch - m.pitch);
+    if (d <= bestD) {
+      bestD = d;
+      best = k;
+    }
+  }
+  return best;
 }
 
 function clamp(v: number, a: number, b: number) {
