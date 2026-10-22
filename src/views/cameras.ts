@@ -3,6 +3,8 @@ import { ROAD, VEHICLE } from '../config';
 import type { CarRig } from '../vehicle/carModel';
 
 export type ViewName = 'driver' | 'chase' | 'top';
+/** Layer for debug drawings: seen only by the outside cameras, never by the driver, the mirrors or the rear camera. */
+export const DEBUG_LAYER = 1;
 export const VIEW_LABELS: Record<ViewName, string> = { driver: 'Posto guida', chase: 'Esterna', top: 'Dall\'alto' };
 const ORDER: ViewName[] = ['driver', 'chase', 'top'];
 
@@ -46,6 +48,8 @@ export class Views {
     this.glanceAngles = { left: angles(rig.mirrors.left), right: angles(rig.mirrors.right) };
 
     this.top.up.set(0, 0, -1); // driving direction points right on screen, curb at the bottom
+    this.chase.layers.enable(DEBUG_LAYER);
+    this.top.layers.enable(DEBUG_LAYER);
 
     let dragging = false;
     dom.addEventListener('pointerdown', (e) => {

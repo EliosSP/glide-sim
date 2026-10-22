@@ -215,12 +215,12 @@ function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Mater
   );
   glass.name = 'glass';
   glass.rotation.y = -Math.PI / 2; // faces -X (backwards)
-  glass.position.set(-0.066, -0.012, 0); // clear of the housing even with a few degrees of pitch
+  glass.position.set(-0.066, -0.009, 0); // clear of the housing even with a few degrees of pitch
   g.add(glass);
-  // Mount for the light bar: thin strip on the rim above the glass, facing backwards
+  // Mount for the light bar: thin strip on the lower rim, below the glass, facing backwards
   const mount = new THREE.Object3D();
   mount.name = 'bar-mount';
-  mount.position.set(-0.059, 0.054, 0);
+  mount.position.set(-0.059, -0.069, 0);
   mount.rotation.y = -Math.PI / 2;
   g.add(mount);
   return g;

@@ -62,6 +62,7 @@ export type FlowEvent =
   | AssistEvent
   | { type: 'parkButton'; t: number }
   | { type: 'parkActive'; t: number }
+  | { type: 'cancel'; from: string; t: number }
   | { type: 'modeChosen'; mode: ModeChoice; t: number }
   | { type: 'autoStart'; t: number }
   | { type: 'takeover'; t: number }
@@ -79,6 +80,7 @@ export interface FlowSettings {
 }
 
 type StopReason = 'driver' | 'confidence' | 'obstacle';
+type BrakeReason = StopReason | 'cancel';
 const PREVIEW_LOOP = 4.5; // s, length of the animated preview
 const REPLAN_NOTICE = 3.5; // s, the new trajectory is shown before moving again
 const CONFLICT_CLEARANCE = 0.1; // m, a newly arrived obstacle closer than this to the rest of the trajectory
@@ -125,7 +127,7 @@ export class GlideFlow {
   private autoPlan: ParkPlan | null = null;
   private previewStart = 0;
   private autoStartedAt = 0;
-  private braking: StopReason | null = null; // stopping before entering the stopped state
+  private braking: BrakeReason | null = null; // stopping before entering the stopped state (or after a cancel)
   private replanAfterStop = false;
   private stopReason: StopReason | null = null;
   private stopPose: Pose | null = null;
@@ -189,11 +191,12 @@ export class GlideFlow {
 
   onParkButton(car: VehicleState, now: number, contacts: number) {
     this.emit({ type: 'parkButton', t: now });
+    if (this.screen === 'autoRunning' || this.screen === 'autoReplan' || this.screen === 'autoStopped') return this.cancelAuto(car, now);
     if (this.screen === 'assisted' || this.screen === 'assistBlocked' || this.screen === 'autoPreview') {
       this.maneuver = null;
       this.auto = null;
       this.screen = 'approach';
-      this.say('Glide annullato', now);
+      this.say('Glide annullato · il controllo è tuo', now);
       return;
     }
     if (this.screen === 'choose') {
@@ -207,6 +210,23 @@ export class GlideFlow {
     this.screen = 'choose';
     this.contactsAtStart = contacts;
     this.emit({ type: 'parkActive', t: now });
+  }
+
+  /** P during the autonomous manoeuvre: firm stop, Glide off, back to the approach; the driver has control. */
+  private cancelAuto(car: VehicleState, now: number) {
+    this.emit({ type: 'cancel', from: this.screen, t: now });
+    this.braking = Math.abs(car.speed) > 0.02 ? 'cancel' : null;
+    this.auto = null;
+    this.autoPlan = null;
+    this.maneuver = null;
+    this.replanAfterStop = false;
+    this.stopReason = null;
+    this.stopPose = null;
+    this.evaluation = null;
+    this.locked = false;
+    this.blinker = null;
+    this.screen = 'approach';
+    this.say('Glide annullato · il controllo è tuo', now);
   }
 
   onModeChosen(mode: ModeChoice, car: VehicleState, now: number) {
@@ -336,14 +356,24 @@ export class GlideFlow {
   }
 
   /** Who moves the car this physics step. */
-  autoControl(): 'auto' | 'braking' | null {
+  autoControl(): 'auto' | 'braking' | 'hold' | null {
     if (this.braking) return 'braking';
+    if (this.screen === 'autoReplan') return 'hold';
     return this.screen === 'autoRunning' ? 'auto' : null;
+  }
+
+  /** Re-plan notice: Glide holds the car still; steering or braking counts as a takeover (I1). */
+  holdStep(car: VehicleState, input: DriveInput, now: number) {
+    car.speed = 0;
+    if (input.brake || input.hardBrake || input.steerLeft || input.steerRight) {
+      this.emit({ type: 'takeover', t: now });
+      this.stopWith('driver', car);
+    }
   }
 
   /** Brake input while stopping: immediate when the driver intervened, Glide's own stop otherwise. */
   brakeInput(input: DriveInput): DriveInput {
-    return { ...input, throttle: false, brake: true, hardBrake: this.braking === 'driver' };
+    return { ...input, throttle: false, brake: true, hardBrake: this.braking === 'driver' || this.braking === 'cancel' };
   }
 
   autoStep(car: VehicleState, dt: number, input: DriveInput, now: number) {
@@ -519,7 +549,9 @@ export class GlideFlow {
     if (this.braking && speed < 0.02) {
       const reason = this.braking;
       this.braking = null;
-      if (this.replanAfterStop) {
+      if (reason === 'cancel') {
+        // Cancelled: just stopped, nothing else to do
+      } else if (this.replanAfterStop) {
         this.replanAfterStop = false;
         if (this.rebuild(car)) {
           this.screen = 'autoReplan';

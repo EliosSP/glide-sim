@@ -6,7 +6,7 @@ import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
 import { VehicleState, type DriveInput } from './vehicle/kinematics';
 import { Keyboard } from './vehicle/input';
-import { Views, VIEW_LABELS } from './views/cameras';
+import { DEBUG_LAYER, Views, VIEW_LABELS } from './views/cameras';
 import { Hud } from './ui/hud';
 import { CentralDisplay, type ReconLabel } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
@@ -19,6 +19,13 @@ import { GlideAudio } from './audio/sounds';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
+
+// Single simulation clock: every module receives `now` from here. With ?fixedStep=1 each frame advances
+// a fixed 1/60 s whatever the real frame time (headless browsers, demo recording, automated tests).
+const FIXED_STEP = new URLSearchParams(location.search).get('fixedStep') === '1';
+const FRAME_DT = 1 / 60;
+let simTime = 0;
+const nowS = () => simTime;
 
 const app = document.getElementById('app')!;
 const world = new World(app);
@@ -113,13 +120,14 @@ const pathLine = new THREE.Line(
 );
 pathLine.renderOrder = 10;
 pathLine.visible = false;
+pathLine.layers.set(DEBUG_LAYER);
 world.scene.add(pathLine);
 
-/** Debug: planned rear-axle trajectory drawn on the road while the HUD is visible. */
+/** Debug: planned rear-axle trajectory on the road (panel toggle), only in the outside views. */
 function showPath(plan: ParkPlan | null) {
   if (plan !== shownPlan && plan) pathLine.geometry.setFromPoints(plan.path.map((p) => new THREE.Vector3(p.x, 0.03, p.z)));
   shownPlan = plan;
-  pathLine.visible = !!plan && hud.visible;
+  pathLine.visible = !!plan && debug.showPath;
 }
 
 const views = new Views(rig, world.renderer.domElement);
@@ -131,6 +139,7 @@ const keys = new Keyboard();
 
 // --- parameters panel (F1); the full panel arrives in milestone 8 ---
 const params = { time: 'day' as TimeOfDay, quality: 'high' as Quality };
+const debug = { showPath: false };
 const gui = new GUI({ title: 'Parametri' });
 const sceneFolder = gui.addFolder('Scena');
 const actorsFolder = gui.addFolder('Scenario e attori');
@@ -163,6 +172,7 @@ actorsFolder.add(actorSettings, 'cyclist').name('Ciclista (controsterzo)').onCha
 actorsFolder.add(actorSettings, 'traffic').name('Traffico corsia opposta').onChange(() => actors.applySettings());
 actorsFolder.add(actorSettings, 'hazard').name('Pericolo (hook onHazard)');
 soundFolder.add(audio, 'volume', 0, 1, 0.05).name('Volume');
+gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)');
 
 function setScenario(sc: Scenario) {
   Object.assign(actorSettings, scenarioSettings(sc));
@@ -184,7 +194,6 @@ keys.on('KeyD', () => (gearMsg = car.setGear('D') ? '' : 'Fermati per inserire l
 keys.on('KeyC', () => views.cycle());
 keys.on('KeyV', () => (views.split = !views.split));
 keys.on('KeyH', () => hud.toggle());
-const nowS = () => performance.now() / 1000;
 keys.on('KeyE', () => flow.onBlinker('right', car, nowS()));
 keys.on('KeyQ', () => flow.onBlinker('left', car, nowS()));
 keys.on('KeyP', () => flow.onParkButton(car, nowS(), contacts));
@@ -195,8 +204,14 @@ keys.on('NumpadEnter', () => flow.onStart(car, nowS()));
 keys.on('KeyA', () => flow.onSwitchToAssisted(car, nowS()));
 keys.on('KeyM', () => flow.onManual(nowS()));
 keys.on('F1', () => gui.show((guiVisible = !guiVisible)));
+keys.on('KeyG', () => gui.show((guiVisible = !guiVisible))); // F1 changes the brightness on Macs
+keys.on('KeyF', () => {
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void document.documentElement.requestFullscreen().catch(() => {});
+});
 keys.on('KeyN', () => setScenario(actorSettings.scenario === 'empty' ? 'busy' : 'empty'));
 keys.on('Escape', () => resetAll());
+keys.on('Backspace', () => resetAll()); // in fullscreen Esc only leaves fullscreen
 
 function resetAll() {
   car.reset(START.x, START.z, START.heading);
@@ -263,6 +278,7 @@ function physicsStep(input: DriveInput, now: number) {
   const control = flow.autoControl();
   if (control === 'auto') flow.autoStep(car, PHYSICS_DT, input, now);
   else if (control === 'braking') car.step(flow.brakeInput(input), PHYSICS_DT);
+  else if (control === 'hold') flow.holdStep(car, input, now);
   else car.step(input, PHYSICS_DT);
   const hit = collisions.check(car.x, car.z, car.heading, car.steer);
   // Already overlapping (e.g. after a reset onto an obstacle): let the car move out
@@ -280,12 +296,15 @@ function physicsStep(input: DriveInput, now: number) {
 
 function frame(time: number) {
   timer.update(time);
-  const dt = Math.min(timer.getDelta(), 0.1);
+  const realDt = Math.min(timer.getDelta(), 0.1);
+  const dt = FIXED_STEP ? FRAME_DT : realDt;
   acc += dt;
   const input = keys.drive();
-  while (acc >= PHYSICS_DT) {
-    physicsStep(input, performance.now() / 1000);
-    acc -= PHYSICS_DT;
+  let steps = FIXED_STEP ? Math.round(FRAME_DT / PHYSICS_DT) : Math.floor(acc / PHYSICS_DT);
+  acc = FIXED_STEP ? 0 : acc - steps * PHYSICS_DT;
+  while (steps-- > 0) {
+    simTime += PHYSICS_DT;
+    physicsStep(input, simTime);
   }
 
   poseCar(rig, car.x, car.z, car.heading, car.steer, car.wheelSpin, car.steeringWheelDeg);
@@ -294,7 +313,7 @@ function frame(time: number) {
   world.followSun(car.x, car.z);
   views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : null;
 
-  const now = performance.now() / 1000;
+  const now = nowS();
   actors.update(dt, now, { x: car.x, z: car.z, heading: car.heading }, actorContext());
   recon.syncActors(actors.markers());
   parkingSensors(now);
@@ -324,13 +343,13 @@ function frame(time: number) {
 
   // FPS and automatic low-quality fallback
   fpsFrames++;
-  fpsTime += dt;
+  fpsTime += realDt;
   if (fpsTime >= 0.5) {
     fps = fpsFrames / fpsTime;
     fpsFrames = 0;
     fpsTime = 0;
     lowFpsSeconds = fps < 40 ? lowFpsSeconds + 0.5 : 0;
-    if (!autoDowngraded && params.quality === 'high' && lowFpsSeconds >= 3) {
+    if (!FIXED_STEP && !autoDowngraded && params.quality === 'high' && lowFpsSeconds >= 3) {
       autoDowngraded = true;
       params.quality = 'low';
       setQuality('low');
@@ -430,5 +449,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { actors, audio, actorSettings, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { actors, audio, actorSettings, debug, gui, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);
