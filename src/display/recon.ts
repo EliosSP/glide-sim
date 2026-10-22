@@ -5,6 +5,7 @@ import type { FreeSpace, ParkedCar } from '../scene/parkingLayout';
 import type { Pose } from '../planner/geometry';
 import type { ReconInfo } from '../modes/flow';
 import type { AutoTimeline } from '../modes/autonomous';
+import type { ActorMarker } from '../actors/actors';
 
 export type SpaceLook = 'fits' | 'noFit' | 'chosen' | 'chosenNoFit';
 
@@ -37,6 +38,18 @@ export class ReconView {
   private ghost: THREE.Mesh;
   private shownPreview: ReconInfo['preview'] | null = null;
   private objects = new Map<string, THREE.Object3D>();
+  private actors = new Map<string, THREE.Mesh>();
+  private actorGeo = {
+    car: new RoundedBoxGeometry(VEHICLE.length, 1.35, VEHICLE.width, 3, 0.35),
+    bike: new RoundedBoxGeometry(1.7, 1.4, 0.5, 2, 0.2),
+    person: new THREE.CylinderGeometry(0.25, 0.25, 1.7, 12),
+  };
+  private actorMat = {
+    car: new THREE.MeshStandardMaterial({ color: 0x8c949d, roughness: 0.6 }),
+    // Vulnerable road users stand out
+    bike: new THREE.MeshStandardMaterial({ color: 0xe8c547, roughness: 0.6 }),
+    person: new THREE.MeshStandardMaterial({ color: 0xe8c547, roughness: 0.6 }),
+  };
 
   constructor(cars: ParkedCar[], opposite: ParkedCar[], spaces: FreeSpace[], width: number, height: number) {
     this.target = new THREE.WebGLRenderTarget(width, height, { samples: 4 });
@@ -125,6 +138,27 @@ export class ReconView {
     m.position.set(pos.x, 0.5, pos.z);
     this.scene.add(m);
     this.objects.set(id, m);
+  }
+
+  /** Moving actors (other cars, cyclist, pedestrians), updated every frame. */
+  syncActors(markers: ActorMarker[]) {
+    const seen = new Set<string>();
+    for (const m of markers) {
+      seen.add(m.id);
+      let mesh = this.actors.get(m.id);
+      if (!mesh) {
+        mesh = new THREE.Mesh(this.actorGeo[m.kind], this.actorMat[m.kind]);
+        this.scene.add(mesh);
+        this.actors.set(m.id, mesh);
+      }
+      mesh.position.set(m.x, m.kind === 'person' ? 1.0 : 0.7, m.z);
+      mesh.rotation.y = -m.heading;
+    }
+    for (const [id, mesh] of this.actors) {
+      if (seen.has(id)) continue;
+      this.scene.remove(mesh);
+      this.actors.delete(id);
+    }
   }
 
   /** World point → pixel in the rendered image (for labels drawn on top). */

@@ -30,10 +30,10 @@ export class Collisions {
     this.obstacles = cars.map((c) => ({ x: c.x, poly: rectPolygon(c.x, c.z, c.length / 2, PARKED_HALF_WIDTH), kind: 'car' as const }));
   }
 
-  /** Temporary obstacle (e.g. an object that appears during a manoeuvre). */
-  addObject(id: string, x: number, z: number, halfLen: number, halfWidth: number) {
+  /** Temporary or moving obstacle (an object that appears during a manoeuvre, a car of the traffic). */
+  addObject(id: string, x: number, z: number, halfLen: number, halfWidth: number, kind: 'car' | 'object' = 'object') {
     this.removeObject(id);
-    this.obstacles.push({ x, poly: rectPolygon(x, z, halfLen, halfWidth), kind: 'object', id });
+    this.obstacles.push({ x, poly: rectPolygon(x, z, halfLen, halfWidth), kind, id });
   }
 
   removeObject(id: string) {
@@ -80,6 +80,17 @@ export class Collisions {
     let d = Infinity;
     for (const o of this.obstacles) {
       if (Math.abs(o.x - pose.x) > 9) continue;
+      d = Math.min(d, polygonDistance(body, o.poly));
+    }
+    return d;
+  }
+
+  /** Smallest distance from the body to a moving car (traffic, the car waiting behind) (m). */
+  movingCarClearance(pose: Pose) {
+    const body = footprint(pose);
+    let d = Infinity;
+    for (const o of this.obstacles) {
+      if (o.kind !== 'car' || !o.id || Math.abs(o.x - pose.x) > 9) continue;
       d = Math.min(d, polygonDistance(body, o.poly));
     }
     return d;

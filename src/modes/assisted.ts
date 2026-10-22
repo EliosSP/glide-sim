@@ -1,7 +1,7 @@
 import type { VehicleState } from '../vehicle/kinematics';
 import { bodyToCurb, type Collisions } from '../vehicle/collision';
 import type { BarView } from '../mirrors/lightBar';
-import { MAX_STEER, kappaOf, steerOf, type Pose } from '../planner/geometry';
+import { MAX_STEER, advance, kappaOf, steerOf, type Pose } from '../planner/geometry';
 import { chooseCounterSteer, counterSteerFor, finalZ, solveSwitch, startXFor, type ParkPlan } from '../planner/parallelPlanner';
 
 export type AssistedPhase = 'positioning' | 'steer1' | 'reverse1' | 'steer2' | 'reverse2' | 'inside' | 'done';
@@ -46,6 +46,10 @@ const STOPPED = 0.02;
 const CONFIRM_HOLD = 0.3;
 /** After "point reached", the next phase starts only once its blinks have been seen. */
 const REACHED_HOLD = 0.6;
+/** While reversing: the countdown ends early where the body would come this close to an obstacle. */
+const STOP_CLEARANCE = 0.06;
+/** A moving car (e.g. the one waiting behind) this close to the rest of the path turns the rear camera on. */
+const CLOSE_BEHIND = 0.6;
 
 export class AssistedManeuver {
   phase: AssistedPhase = 'positioning';
@@ -55,6 +59,10 @@ export class AssistedManeuver {
   instruction = '';
   /** While reversing: curvature being driven and distance left to the next point (for the camera overlay). */
   guide: { kappa: number; remaining: number } | null = null;
+  /** A car stopped close behind: the display shows the rear camera while reversing. */
+  closeBehind = false;
+  /** The countdown ends before the planned point because something is in the way. */
+  blocked = false;
 
   private t0: number;
   private range = 5;
@@ -105,6 +113,8 @@ export class AssistedManeuver {
     const fillLeft = Math.max(0, -car.steer) / MAX_STEER;
     const p = this.params;
     this.guide = null;
+    this.closeBehind = false;
+    this.blocked = false;
 
     switch (this.phase) {
       case 'positioning': {
@@ -138,17 +148,20 @@ export class AssistedManeuver {
       case 'reverse1': {
         const k1 = car.steer > 0.02 ? kappaOf(car.steer) : kappaOf(this.plan.steer1);
         const sol = solveSwitch(pose, k1, kappaOf(this.plan.steer2), finalZ());
-        const view = this.countdown(sol.remaining, now, 'right');
-        this.guide = { kappa: k1, remaining: sol.remaining };
-        this.instruction = sol.remaining > p.pointTol ? 'Retro: guarda lo specchietto destro' : sol.remaining < -p.pointTol ? 'Troppo indietro: vai avanti' : 'Fermati qui';
+        const remaining = this.limitByObstacles(pose, k1, sol.remaining);
+        const view = this.countdown(remaining, now, 'right');
+        this.guide = { kappa: k1, remaining };
+        this.instruction = remaining > p.pointTol ? 'Retro: guarda lo specchietto destro' : remaining < -p.pointTol ? 'Troppo indietro: vai avanti' : 'Fermati qui';
+        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = "Fermati qui: dietro non c'è spazio";
         // Pre-announce the counter-steer in the left mirror
         let left: BarView = OFF;
-        const eta = sol.remaining / Math.max(Math.abs(car.speed), 0.4);
-        if (sol.remaining > p.pointTol && eta <= p.announceLead) {
+        const eta = remaining / Math.max(Math.abs(car.speed), 0.4);
+        if (remaining > p.pointTol && eta <= p.announceLead) {
           const target = Math.min(1, Math.abs(steerOf(counterSteerFor(sol.switchPose, finalZ()))) / MAX_STEER);
           left = { kind: 'announce', target, tol: p.notchTol, alpha: 0.15 + 0.6 * (1 - eta / p.announceLead) };
         }
-        if (Math.abs(sol.remaining) <= p.pointTol && stopped && this.reachedFor(now)) {
+        // Stopped at the point (or where the obstacle allows): counter-steer from here
+        if (Math.abs(remaining) <= p.pointTol && stopped && this.reachedFor(now)) {
           this.steer2Target = chooseCounterSteer(pose, this.collisions) / MAX_STEER;
           this.go('steer2', now); // snap: right off, left on
         }
@@ -169,10 +182,11 @@ export class AssistedManeuver {
 
       case 'reverse2': {
         const k2 = car.steer < -0.02 ? kappaOf(car.steer) : -kappaOf(this.steer2Target * MAX_STEER);
-        const remaining = car.heading / k2; // > 0 while still angled towards the curb
+        const remaining = this.limitByObstacles(pose, k2, car.heading / k2); // > 0 while still angled towards the curb
         const view = this.countdown(remaining, now, 'left');
         this.guide = { kappa: k2, remaining };
         this.instruction = remaining > p.pointTol ? 'Retro: guarda lo specchietto sinistro' : remaining < -p.pointTol ? 'Troppo: vai avanti' : 'Fermati e raddrizza';
+        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = "Fermati qui: dietro non c'è spazio";
         if (Math.abs(remaining) <= p.pointTol && stopped && this.reachedFor(now)) this.go('inside', now);
         return { left: view, right: OFF };
       }
@@ -194,6 +208,31 @@ export class AssistedManeuver {
         this.instruction = 'P inserita';
         return { left: OFF, right: OFF };
     }
+  }
+
+  /**
+   * Distance left along the current arc, shortened to where the body would get within STOP_CLEARANCE
+   * of an obstacle (the countdown then ends there: "stop here"). Also flags a moving car close behind.
+   */
+  private limitByObstacles(pose: Pose, kappa: number, remaining: number) {
+    if (remaining <= 0) return remaining;
+    let moving = Infinity;
+    for (let s = 0; s <= remaining + 1e-6; s += 0.1) {
+      const q = advance(pose, kappa, -Math.min(s, remaining));
+      moving = Math.min(moving, this.collisions.movingCarClearance(q));
+      if (this.collisions.carClearance(q) < STOP_CLEARANCE) {
+        this.blocked = true;
+        this.closeBehind = moving < CLOSE_BEHIND;
+        return Math.max(0, s - 0.1);
+      }
+    }
+    this.closeBehind = moving < CLOSE_BEHIND;
+    return remaining;
+  }
+
+  /** Whether the planned two-arc path (from its start) still keeps clear of everything. */
+  pathClear() {
+    return this.plan.path.every((q) => this.collisions.carClearance(q) >= STOP_CLEARANCE + 0.02);
   }
 
   private reachedFor(now: number) {

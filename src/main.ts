@@ -14,7 +14,9 @@ import { MirrorReflection, aimMirror } from './mirrors/mirrorReflection';
 import { LightBar, type BarView } from './mirrors/lightBar';
 import type { ParkPlan } from './planner/parallelPlanner';
 import { PHASE_LABELS } from './modes/assisted';
-import { GlideFlow } from './modes/flow';
+import { GlideFlow, type FlowEvent } from './modes/flow';
+import { GlideAudio } from './audio/sounds';
+import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
 
@@ -55,7 +57,54 @@ const flowSettings = {
   speedProfile: 'fluid' as 'fluid' | 'abrupt',
   autoLead: 1.0,
 };
-const flow = new GlideFlow(street.spaces, collisions, flowSettings, (e) => console.debug('[glide]', e), START.z);
+const audio = new GlideAudio();
+const flow = new GlideFlow(street.spaces, collisions, flowSettings, onFlowEvent, START.z);
+
+// --- other actors (scenario "Vuoto" / "Animato") ---
+const actorSettings: ActorSettings = { ...scenarioSettings('empty'), waitingGap: 6, hazard: false };
+const actors = new Actors(world.scene, collisions, actorSettings);
+actors.onSettled = () => flow.onTrafficSettled(car, nowS(), "L'auto dietro è troppo vicina");
+actors.onHazard = (e) => {
+  console.debug('[glide] hazard', e);
+  flow.onHazard(e);
+};
+
+/** Sounds: only short confirmations, plus the actors that react to Glide. */
+function onFlowEvent(e: FlowEvent) {
+  console.debug('[glide]', e);
+  switch (e.type) {
+    case 'confirm':
+    case 'pointReached':
+      audio.confirm(e.side);
+      break;
+    case 'parkActive':
+      audio.parkOn();
+      actors.onParkActivated({ x: car.x, z: car.z, heading: car.heading });
+      break;
+    case 'autoStart':
+      audio.start();
+      break;
+    case 'autoDone':
+      audio.end();
+      break;
+    case 'phase':
+      if (e.phase === 'done') audio.end();
+      break;
+  }
+}
+
+const MANEUVER_SCREENS = new Set<GlideFlow['screen']>(['choose', 'assisted', 'assistBlocked', 'autoPreview', 'autoRunning', 'autoStopped', 'autoReplan']);
+const SENSOR_SCREENS = new Set<GlideFlow['screen']>(['assisted', 'autoRunning', 'autoReplan', 'autoStopped']);
+
+function actorContext(): ActorContext {
+  let counterSteer = flow.screen === 'assisted' && flow.maneuver?.phase === 'steer2';
+  const a = flow.auto;
+  if (a && flow.screen === 'autoRunning') {
+    const t2 = a.timeline.stageStart('arc2');
+    counterSteer = t2 !== null && a.t >= t2 - 2.5;
+  }
+  return { maneuver: MANEUVER_SCREENS.has(flow.screen), counterSteer, egoSpeed: car.speed };
+}
 let lastBarViews: { left: BarView; right: BarView } | null = null;
 let shownPlan: ParkPlan | null = null;
 const pathLine = new THREE.Line(
@@ -84,6 +133,8 @@ const keys = new Keyboard();
 const params = { time: 'day' as TimeOfDay, quality: 'high' as Quality };
 const gui = new GUI({ title: 'Parametri' });
 const sceneFolder = gui.addFolder('Scena');
+const actorsFolder = gui.addFolder('Scenario e attori');
+const soundFolder = gui.addFolder('Suoni');
 const displayFolder = gui.addFolder('Display');
 sceneFolder.add(params, 'time', { Giorno: 'day', Sera: 'evening' }).name('Ora').onChange((t: TimeOfDay) => world.setTime(t));
 const qualityCtrl = sceneFolder
@@ -100,6 +151,28 @@ scenarioFolder.add(flowSettings, 'speedProfile', { Fluido: 'fluid', Brusco: 'abr
 scenarioFolder.add(flowSettings, 'autoLead', 0.5, 1.5, 0.05).name('Anticipo barra (s)');
 scenarioFolder.add(flowSettings, 'curbPoorlyVisible').name('Cordolo poco visibile (I2)');
 scenarioFolder.add({ obstacle: () => placeObstacle() }, 'obstacle').name('Ostacolo imprevisto (I3)');
+actorsFolder
+  .add(actorSettings, 'scenario', { Vuoto: 'empty', Animato: 'busy' })
+  .name('Scenario (N)')
+  .onChange((sc: Scenario) => setScenario(sc));
+actorsFolder.add(actorSettings, 'pedestrians').name('Pedoni').onChange(() => actors.applySettings());
+actorsFolder.add(actorSettings, 'waitingCar').name('Auto che aspetta dietro').onChange(() => actors.applySettings());
+actorsFolder.add(actorSettings, 'waitingGap', 1.5, 8, 0.1).name('Distanza auto dietro (m)');
+actorsFolder.add(actorSettings, 'tooClose').name('Si infila troppo vicina');
+actorsFolder.add(actorSettings, 'cyclist').name('Ciclista (controsterzo)').onChange(() => actors.applySettings());
+actorsFolder.add(actorSettings, 'traffic').name('Traffico corsia opposta').onChange(() => actors.applySettings());
+actorsFolder.add(actorSettings, 'hazard').name('Pericolo (hook onHazard)');
+soundFolder.add(audio, 'volume', 0, 1, 0.05).name('Volume');
+
+function setScenario(sc: Scenario) {
+  Object.assign(actorSettings, scenarioSettings(sc));
+  for (const c of actorsFolder.controllers) c.updateDisplay();
+  actors.applySettings();
+  resetAll();
+  flow.notice(sc === 'busy' ? 'Scenario animato' : 'Scenario vuoto', nowS());
+}
+actors.applySettings();
+
 let guiVisible = false;
 gui.show(guiVisible);
 world.setTime('day');
@@ -122,7 +195,10 @@ keys.on('NumpadEnter', () => flow.onStart(car, nowS()));
 keys.on('KeyA', () => flow.onSwitchToAssisted(car, nowS()));
 keys.on('KeyM', () => flow.onManual(nowS()));
 keys.on('F1', () => gui.show((guiVisible = !guiVisible)));
-keys.on('Escape', () => {
+keys.on('KeyN', () => setScenario(actorSettings.scenario === 'empty' ? 'busy' : 'empty'));
+keys.on('Escape', () => resetAll());
+
+function resetAll() {
   car.reset(START.x, START.z, START.heading);
   views.resetChase();
   gearMsg = '';
@@ -130,7 +206,8 @@ keys.on('Escape', () => {
   inContact = null;
   flow.reset();
   removeObstacle();
-});
+  actors.reset();
+}
 
 // --- I3 test: an object appears at the back of the space (bin by the curb) ---
 const binMesh = new THREE.Mesh(
@@ -218,6 +295,9 @@ function frame(time: number) {
   views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : null;
 
   const now = performance.now() / 1000;
+  actors.update(dt, now, { x: car.x, z: car.z, heading: car.heading }, actorContext());
+  recon.syncActors(actors.markers());
+  parkingSensors(now);
   const out = flow.update(car, now, contacts);
   bars.left.draw(out.bars.left, now);
   bars.right.draw(out.bars.right, now);
@@ -265,12 +345,25 @@ function frame(time: number) {
     `Ruote     ${THREE.MathUtils.radToDeg(car.steer).toFixed(1)}°`,
     `Volante   ${car.steeringWheelDeg.toFixed(0)}°`,
     `Posizione x ${car.x.toFixed(2)}  z ${car.z.toFixed(2)}  ψ ${THREE.MathUtils.radToDeg(car.heading).toFixed(1)}°`,
+    `Scenario  ${actorSettings.scenario === 'busy' ? 'Animato' : 'Vuoto'}`,
     `Contatti  ${contacts}${inContact ? `  ⚠ contatto con ${CONTACT_LABEL[inContact]}` : ''}`,
     ...assistHud(),
     `FPS       ${fps.toFixed(0)}${autoDowngraded ? ' (qualità bassa automatica)' : ''}`,
     gearMsg,
   ]);
   requestAnimationFrame(frame);
+}
+
+// Parking sensors: during the manoeuvre or in reverse, while moving (and 1 s after), last centimetres only
+let lastMoving = -Infinity;
+function parkingSensors(now: number) {
+  if (!SENSOR_SCREENS.has(flow.screen) && car.gear !== 'R') return;
+  if (Math.abs(car.speed) > 0.02) lastMoving = now;
+  if (now - lastMoving > 1) return;
+  const n = collisions.nearest({ x: car.x, z: car.z, heading: car.heading });
+  if (!n) return;
+  const lateral = -(n.point[0] - car.x) * Math.sin(car.heading) + (n.point[1] - car.z) * Math.cos(car.heading);
+  audio.sensors(n.distance, lateral > 0.3 ? 'right' : lateral < -0.3 ? 'left' : null, now);
 }
 
 function assistHud(): string[] {
@@ -337,5 +430,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { actors, audio, actorSettings, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);
