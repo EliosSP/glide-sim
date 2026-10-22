@@ -34,7 +34,7 @@ function phTexture(name: string, map: 'diff' | 'nor' | 'rough') {
   if (!e) {
     const entry = { base: null as unknown as THREE.Texture, clones: [] as THREE.Texture[], loaded: false };
     // Clones share the image; they are flagged for upload only once it has arrived
-    entry.base = loader.load(`/textures/${key}.jpg`, () => {
+    entry.base = loader.load(`${import.meta.env.BASE_URL}textures/${key}.jpg`, () => {
       entry.loaded = true;
       for (const c of entry.clones) c.needsUpdate = true;
     });

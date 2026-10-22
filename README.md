@@ -12,6 +12,16 @@ npm run dev
 
 Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 
+## Pubblicazione
+
+Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-sim/** (da aprire in Chrome).
+
+- Ogni push su `main` pubblica la nuova versione in 1–2 minuti (workflow `.github/workflows/deploy.yml`).
+- Gli errori di pubblicazione si vedono nella scheda **Actions** del repository.
+- **Attenzione:** un errore TypeScript blocca la pubblicazione. Prima di fare push esegui `npm run build` in locale e controlla che finisca senza errori.
+- Il repository è privato, ma il sito è visibile a chiunque abbia il link.
+- In locale non cambia nulla: `npm run dev` usa il percorso `/`; la pubblicazione usa `/glide-sim/` (dalla variabile `VITE_BASE`, impostata dal workflow con il nome del repository).
+
 ## Comandi
 
 | Tasto | Azione |

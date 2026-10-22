@@ -9,11 +9,11 @@ const PRESETS: Record<TimeOfDay, {
   envIntensity: number; fog: number; lamps: number;
 }> = {
   day: {
-    hdri: '/hdri/day.hdr', exposure: 0.95, sunColor: 0xfff3e2, sunIntensity: 2.6, sunDir: [-0.45, 0.8, 0.4],
+    hdri: `${import.meta.env.BASE_URL}hdri/day.hdr`, exposure: 0.95, sunColor: 0xfff3e2, sunIntensity: 2.6, sunDir: [-0.45, 0.8, 0.4],
     envIntensity: 1.0, fog: 0xc9d6e2, lamps: 0,
   },
   evening: {
-    hdri: '/hdri/evening.hdr', exposure: 0.6, sunColor: 0xff9a5c, sunIntensity: 0.7, sunDir: [-0.9, 0.12, 0.35],
+    hdri: `${import.meta.env.BASE_URL}hdri/evening.hdr`, exposure: 0.6, sunColor: 0xff9a5c, sunIntensity: 0.7, sunDir: [-0.9, 0.12, 0.35],
     envIntensity: 0.55, fog: 0x3a3a4a, lamps: 3,
   },
 };
