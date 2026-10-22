@@ -25,7 +25,7 @@ import { bodyToCurb } from './vehicle/collision';
 import { HeadTracker } from './tracking/headTracker';
 import { WebcamHeadSource } from './tracking/headSource';
 import { TrackingPreview } from './tracking/preview';
-import { DEFAULT_MAPPING, INITIAL_MAPPING_STATE, mapHead, mirrorInView, type MirrorGlance } from './tracking/headMapping';
+import { DEFAULT_MAPPING, mapHead, mirrorInView, type MirrorGlance } from './tracking/headMapping';
 import { CalibrationGuide } from './tracking/calibration';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
@@ -333,9 +333,8 @@ const tracker = new HeadTracker();
 const trackingPreview = new TrackingPreview();
 const gaze = { follow: false, preview: false, mirrorTolerance: 12 }; // ° view-to-mirror to log a glance
 const mapping = { ...DEFAULT_MAPPING }; // [to be tuned with real users]
-let mappingState = INITIAL_MAPPING_STATE;
 let glanceSource: 'head' | 'key' | null = null;
-const calibration = new CalibrationGuide(tracker, mapping);
+const calibration = new CalibrationGuide(tracker);
 const gazeMessage = Object.assign(document.createElement('div'), { className: 'gaze-message hidden' });
 document.body.append(gazeMessage);
 const gazeFolder = gui.addFolder('Sguardo');
@@ -346,14 +345,6 @@ gazeFolder.add(mapping, 'deadZone', 0, 10, 0.5).name('Zona morta (°)');
 gazeFolder.add(mapping, 'gainYaw', 1, 8, 0.1).name('Guadagno yaw');
 gazeFolder.add(mapping, 'gainPitch', 1, 6, 0.1).name('Guadagno pitch');
 gazeFolder.add(gaze, 'mirrorTolerance', 3, 25, 1).name('Sguardo registrato entro (°)');
-gazeFolder.add(mapping, 'snapEnabled').name('Scatto sugli specchietti');
-gazeFolder.add(mapping, 'snapIn', 6, 45, 0.5).name('Scatto laterale: ingresso (°)').listen();
-gazeFolder.add(mapping, 'snapOut', 2, 40, 0.5).name('Scatto laterale: uscita (°)').listen();
-gazeFolder.add(mapping, 'snapDelay', 0, 1000, 10).name('Tempo minimo scatto (ms)');
-gazeFolder.add(mapping, 'rearEnabled').name('Scatto retrovisore');
-gazeFolder.add(mapping, 'rearPitch', 4, 25, 0.5).name('Retrovisore: pitch (°)');
-gazeFolder.add(mapping, 'rearYawMin', -20, 10, 0.5).name('Retrovisore: yaw min (°)');
-gazeFolder.add(mapping, 'rearYawMax', 0, 25, 0.5).name('Retrovisore: yaw max (°)');
 gazeFolder.add(tracker.settings, 'minCutoff', 0.1, 5, 0.1).name('Smoothing minCutoff (Hz)');
 gazeFolder.add(tracker.settings, 'beta', 0, 0.2, 0.005).name('Smoothing beta');
 gazeFolder.add(tracker.settings, 'invertYaw').name('Inverti yaw');
@@ -576,7 +567,6 @@ keys.on('KeyQ', () => blinker('left'));
 keys.on('KeyL', () => exportLog());
 // Head tracking: T on/off, Shift+T recalibrate
 keys.on('KeyT', () => (keys.isDown('ShiftLeft') || keys.isDown('ShiftRight') ? calibration.start() : setHeadTracking(!gaze.follow)));
-keys.on('KeyY', () => calibration.acceptSuggestion());
 
 function blinker(side: 'left' | 'right') {
   flow.onBlinker(side, car, nowS());
@@ -721,7 +711,7 @@ function frame(time: number) {
 
   poseCar(rig, car.x, car.z, car.heading, car.steer, car.wheelSpin, car.steeringWheelDeg);
   rig.root.updateMatrixWorld();
-  // Head tracking, hook 2/3: view direction and mirror snaps (a held Z/X/W key always wins)
+  // Head tracking, hook 2/3: the view follows the head (a held Z/X/W key wins)
   tracker.update();
   const keyGlance: MirrorGlance | null = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
   if (demo.active) {
@@ -729,11 +719,9 @@ function frame(time: number) {
     views.glance = demoGlance;
     glanceSource = null;
   } else if (tracker.active) {
-    const m = mapHead({ yaw: tracker.yaw, pitch: tracker.pitch, tracking: tracker.status === 'tracking', key: keyGlance, now: performance.now() }, mappingState, mapping);
-    mappingState = m.state;
-    views.headLook = { yaw: m.yaw, pitch: m.pitch };
-    views.glance = m.glance;
-    glanceSource = m.source;
+    views.headLook = mapHead(tracker, mapping);
+    views.glance = keyGlance; // a held Z/X/W still snaps onto a mirror
+    glanceSource = keyGlance ? 'key' : null;
   } else {
     views.headLook = null;
     views.glance = keyGlance;
@@ -756,7 +744,7 @@ function frame(time: number) {
   frameDt = dt;
   logFrame(now);
   // Head tracking, hook 3/3: calibration guide and preview (full preview never in test mode)
-  const calibMsg = tracker.active ? calibration.update(views.glance === 'display' ? null : views.glance) : null;
+  const calibMsg = tracker.active ? calibration.update() : null;
   gazeMessage.textContent = calibMsg ?? '';
   gazeMessage.classList.toggle('hidden', !calibMsg || demo.active);
   const showPreview = gaze.preview || calibration.active || tracker.status === 'starting' || tracker.status === 'error';
@@ -846,7 +834,7 @@ function logFrame(now: number) {
     logger.setOutcome('done');
     logger.log(now, 'done', { phase: 'done', value: r.seconds, extra: { curbGap: r.curbGap, frontGap: r.frontGap, rearGap: r.rearGap, overs: r.overs } });
   } else if (!r) loggedDone = false;
-  // Mirror glances (a proxy of the gaze, which is filmed separately): from the keys, the head snaps,
+  // Mirror glances (a proxy of the gaze, which is filmed separately): from the keys,
   // or, with the continuous head view, from where the view points
   const gz = settledGaze(gazeTarget(), now);
   const g = gz?.side ?? null;
@@ -870,7 +858,7 @@ let loggedGlanceSource: 'head' | 'key' | null = null;
 let gazeCandidate: { side: MirrorGlance; source: 'head' | 'key'; since: number } | null = null;
 const GAZE_DWELL = 0.15; // s: the head-driven view must rest on a mirror this long (not just sweep past it)
 
-/** Keys and snaps count at once; a mirror merely crossed by the continuous head view does not. */
+/** Keys count at once; a mirror merely crossed by the head-driven view does not. */
 function settledGaze(t: { side: MirrorGlance; source: 'head' | 'key' } | null, now: number) {
   if (!t) {
     gazeCandidate = null;
@@ -883,7 +871,7 @@ function settledGaze(t: { side: MirrorGlance; source: 'head' | 'key' } | null, n
 }
 let frameDt = 0;
 
-/** What the driver is looking at: Z/X/W or a head snap, else the mirror the head-driven view points to. */
+/** What the driver is looking at: Z/X/W, else the mirror the head-driven view points to. */
 function gazeTarget(): { side: MirrorGlance; source: 'head' | 'key' } | null {
   if (demo.active) return null;
   const g = views.glance;

@@ -3,15 +3,13 @@ import type { HeadTracker } from './headTracker';
 const W = 200;
 const H = 150;
 
-/** Thresholds drawn on the preview (degrees of head yaw). */
+/** Dead zone drawn on the preview (degrees of head yaw). */
 export interface PreviewMarks {
   deadZone: number;
-  snapIn: number;
-  snapOut: number;
 }
 
 /**
- * Small webcam preview (mirrored, like a selfie) with the head angles and the thresholds.
+ * Small webcam preview (mirrored, like a selfie) with the head angles and the dead zone.
  * Shown only on request or during calibration, never in test mode. Frames are drawn and discarded.
  */
 export class TrackingPreview {
@@ -49,24 +47,11 @@ export class TrackingPreview {
       g.restore();
     }
 
-    // Yaw scale −30…+30°: dead zone, snap thresholds (in / out), current value
+    // Yaw scale −30…+30°: dead zone and current value
     const y0 = H + 14;
     const x = (deg: number) => W / 2 + (Math.max(-30, Math.min(30, deg)) / 30) * (W / 2 - 8);
     g.fillStyle = 'rgba(255,255,255,0.12)';
     g.fillRect(x(-marks.deadZone), y0 - 6, x(marks.deadZone) - x(-marks.deadZone), 12);
-    g.strokeStyle = 'rgba(255,255,255,0.5)';
-    for (const s of [-1, 1]) {
-      g.setLineDash([]);
-      g.beginPath();
-      g.moveTo(x(s * marks.snapIn), y0 - 8);
-      g.lineTo(x(s * marks.snapIn), y0 + 8);
-      g.stroke();
-      g.setLineDash([2, 2]);
-      g.beginPath();
-      g.moveTo(x(s * marks.snapOut), y0 - 8);
-      g.lineTo(x(s * marks.snapOut), y0 + 8);
-      g.stroke();
-    }
     g.setLineDash([]);
     g.fillStyle = t.status === 'tracking' ? '#6fe08a' : '#9aa3ab';
     g.beginPath();

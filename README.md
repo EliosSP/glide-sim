@@ -33,7 +33,6 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 | Z / X (tieni premuto) | guarda lo specchietto sinistro / destro (la testa si gira e la vista si stringe) |
 | W (tieni premuto) | guarda il retrovisore interno |
 | T / Shift+T | segui la testa con la webcam (on/off) / ricalibra |
-| Y | durante la calibrazione: accetta la soglia di scatto suggerita |
 | Q / E | freccia sinistra / destra (a destra valuta lo spazio evidenziato) |
 | P | pulsante Park Assist (di nuovo: annulla; in autonomo frena e restituisce il controllo) |
 | 1 / 2 | sul display: Assistito / Autonomo |
@@ -110,9 +109,9 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 
 Con una normale webcam la rotazione della testa gira la visuale del posto guida, così guardare gli specchietti viene naturale invece di tenere premuto Z/X. Si segue **la testa, non gli occhi** (il tracciamento dello sguardo da webcam è troppo impreciso). Spento di default: **T** (o pannello → Sguardo → "Segui la testa") lo accende.
 
-- **Calibrazione** (parte da sola, o Shift+T): "Guarda dritto davanti a te" per 1,5 s (quella posizione diventa lo zero), poi gira la testa verso lo specchietto sinistro e destro. Con gli scatti attivi, se uno non scatta Glide propone una soglia più bassa (Y per accettarla).
+- **Calibrazione** (parte da sola, o Shift+T): "Guarda dritto davanti a te" per 1,5 s: quella posizione diventa lo zero.
 - **Mappatura** (default dalla prima prova di guida, tutti nel pannello → Sguardo, da tarare con utenti veri): zona morta 0,5°, guadagno yaw ×4,3 e pitch ×2 (piccoli movimenti della testa girano di molto la visuale), smoothing One Euro minCutoff 1,2 / beta 0,18. La visuale segue la testa in modo continuo.
-- **Scatto sugli specchietti** (opzione, spenta): oltre ±16° di yaw la visuale scatta sullo specchietto come con Z/X, con isteresi (si rilascia sotto ±11°) e tempo minimo 120 ms; testa in su di 10° (yaw tra −4° e +14°) per il retrovisore.
+- **Zoom sugli specchietti:** quando la visuale arriva su uno specchietto il campo visivo si stringe progressivamente, come mettendolo a fuoco (30°, il destro 20° perché è più lontano).
 - **Priorità:** un tasto Z/X/W premuto vince sempre; con il tracciamento acceso il trascinamento del mouse non conta. Se il volto non si vede per più di 0,5 s la visuale torna lentamente al centro.
 - Anteprima webcam (pannello → "Mostra anteprima webcam") con angoli e soglie; compare da sola durante la calibrazione. In modalità test mai: solo un puntino in basso a destra (verde = tracciato, grigio = perso).
 - Permesso negato o webcam assente: compare un messaggio e restano i tasti, niente di bloccante.
@@ -122,7 +121,7 @@ Con una normale webcam la rotazione della testa gira la visuale del posto guida,
 
 **Prestazioni** (misurate sul Mac di sviluppo, webcam simulata di Chrome): 60 fps con tracciamento spento e acceso, in qualità alta e bassa; rilevamento 5–6 ms a 30 Hz. Con un volto vero il rilevamento può costare un po' di più: l'HUD mostra tempo e frequenza reali. Latenza stimata testa → visuale: attesa del rilevamento ~17 ms (max 33) + rilevamento ~6 ms + smoothing della visuale ~33 ms + un frame ~17 ms ≈ 75 ms, più la latenza della webcam (30–50 ms tipici, non misurabile qui): ≈ 100–120 ms in totale.
 
-**Test:** `npm test` (vitest) verifica zona morta, guadagno, isteresi, tempo minimo, priorità dei tasti, sguardo dalla direzione della visuale, segni di yaw e pitch e il filtro.
+**Test:** `npm test` (vitest) verifica zona morta, guadagno, sguardo dalla direzione della visuale, segni di yaw e pitch e il filtro.
 
 ## Log per i test
 
