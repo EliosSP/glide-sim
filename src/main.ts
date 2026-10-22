@@ -56,33 +56,44 @@ const collisions = new Collisions([...street.parkedCars, ...street.oppositeCars]
 // Mirrors: glass aimed from the driver's eye; right one convex (EU passenger side)
 const eyeLocal = new THREE.Vector3(VEHICLE.eye.x, VEHICLE.eye.y, VEHICLE.eye.z);
 const glassOf = (g: THREE.Object3D) => g.getObjectByName('glass') as THREE.Mesh;
+// Jacopo's mirrors sit higher than on the parked cars: the glass and its light bar stay above the door line
+const MIRROR_RAISE = 0.06; // m
+rig.mirrors.left.position.y += MIRROR_RAISE;
+rig.mirrors.right.position.y += MIRROR_RAISE;
 aimMirror(rig.mirrors.left, glassOf(rig.mirrors.left), eyeLocal, new THREE.Vector3(-1, -0.02, -0.06));
 aimMirror(rig.mirrors.right, glassOf(rig.mirrors.right), eyeLocal, new THREE.Vector3(-1, -0.07, 0.05));
+const MIRROR_RES = { high: 1024, low: 512 }; // side mirrors; the rear-view mirror uses half
 const mirrors = [
-  new MirrorReflection(glassOf(rig.mirrors.left), 0.85),
-  new MirrorReflection(glassOf(rig.mirrors.right), 0.55),
+  new MirrorReflection(glassOf(rig.mirrors.left), 0.85, MIRROR_RES.high),
+  new MirrorReflection(glassOf(rig.mirrors.right), 0.55, MIRROR_RES.high),
 ];
 for (const m of mirrors) m.hide = [rig.mirrors.left, rig.mirrors.right];
 // Interior rear-view mirror: flat, lower resolution, only rendered when the driver view is on screen
 const rearMirrorGroup = rig.rearMirror!;
 aimMirror(rearMirrorGroup, glassOf(rearMirrorGroup), eyeLocal, new THREE.Vector3(-1, -0.04, 0));
-const rearMirror = new MirrorReflection(glassOf(rearMirrorGroup), 1, 320);
+const rearMirror = new MirrorReflection(glassOf(rearMirrorGroup), 1, MIRROR_RES.high / 2);
 rearMirror.hide = [rearMirrorGroup];
 let frameNo = 0;
 
 // Light bars on the mirror rims; the zero end is always the one towards the car
 const bars = {
-  left: new LightBar(0.18, 0.014, false),
-  right: new LightBar(0.18, 0.014, true),
+  left: new LightBar(0.18, 0.016, false),
+  right: new LightBar(0.18, 0.016, true),
 };
 // Bar look, edited live from the panel; turquoise variant for the autonomous mode
 const barStyle: BarStyle = { ...DEFAULT_BAR_STYLE };
-const barLook = { turquoiseAuto: false, grayscale: false };
+const barLook = { turquoiseAuto: false, grayscale: false, position: 'bottom' as 'bottom' | 'top' };
+
+/** Light bar on the lower rim (concept) or on the upper rim of the mirror housing. */
+function placeBars() {
+  for (const g of [rig.mirrors.left, rig.mirrors.right]) g.getObjectByName('bar-mount')!.position.y = barLook.position === 'top' ? 0.06 : -0.0695;
+}
 const TURQUOISE = '#5fe8dc';
 const autoBarStyle: BarStyle = { ...barStyle, color: TURQUOISE };
 const AUTO_SCREENS = new Set(['autoRunning', 'autoReplan', 'autoStopped']);
 rig.mirrors.left.getObjectByName('bar-mount')!.add(bars.left.mesh);
 rig.mirrors.right.getObjectByName('bar-mount')!.add(bars.right.mesh);
+placeBars();
 
 // --- Glide flow: approach, space choice, P, mode choice, assisted manoeuvre, end ---
 const flowSettings = {
@@ -216,8 +227,8 @@ const qualityCtrl = sceneFolder
   .onChange((q: Quality) => setQuality(q));
 function setQuality(q: Quality) {
   world.setQuality(q);
-  for (const m of mirrors) m.setResolution(q === 'high' ? 640 : 320);
-  rearMirror.setResolution(q === 'high' ? 320 : 192);
+  for (const m of mirrors) m.setResolution(MIRROR_RES[q]);
+  rearMirror.setResolution(MIRROR_RES[q] / 2);
 }
 displayFolder.add(flowSettings, 'cameraWhileMoving').name('Telecamera in movimento');
 const scenarioFolder = gui.addFolder('Autonomo e scenari');
@@ -259,6 +270,7 @@ const colorCtrl = barFolder.addColor(barStyle, 'color').name('Colore barra').onC
   }
 });
 barFolder.add(barStyle, 'brightness', 0.3, 1.5, 0.05).name('Luminosità barra');
+barFolder.add(barLook, 'position', { Sotto: 'bottom', Sopra: 'top' }).name('Posizione barra').onChange(() => placeBars());
 barFolder.add(barLook, 'turquoiseAuto').name('Turchese in autonomo');
 barFolder.add(barLook, 'grayscale').name('Scala di grigi').onChange((g: boolean) => {
   world.renderer.domElement.style.filter = g ? 'grayscale(1)' : '';
@@ -962,5 +974,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { tracker, gaze, getHeadSource: () => headSource, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { placeBars, tracker, gaze, getHeadSource: () => headSource, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

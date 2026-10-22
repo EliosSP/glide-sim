@@ -371,7 +371,7 @@ function buildInterior(rig: CarRig, S: NonNullable<typeof shared>) {
   // Interior rear-view mirror: flat, on a short stem glued to the top of the windscreen
   const rm = new THREE.Group();
   rm.name = 'mirror-rear';
-  rm.position.set(1.42, 1.27, 0);
+  rm.position.set(1.4, 1.33, 0);
   rm.add(new THREE.Mesh(new RoundedBoxGeometry(0.03, 0.07, 0.22, 2, 0.014), S.trimMat));
   const rmGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.055), new THREE.MeshBasicMaterial({ color: 0x222830 }));
   rmGlass.name = 'glass';
@@ -379,8 +379,8 @@ function buildInterior(rig: CarRig, S: NonNullable<typeof shared>) {
   rmGlass.position.set(-0.017, 0, 0);
   rm.add(rmGlass);
   b.add(rm);
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.06, 6), S.trimMat);
-  stem.position.set(1.435, 1.32, 0);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.05, 6), S.trimMat);
+  stem.position.set(1.41, 1.38, 0);
   b.add(stem);
   rig.rearMirror = rm;
 }

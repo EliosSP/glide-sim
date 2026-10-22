@@ -34,9 +34,13 @@ export class MirrorReflection {
     this.h = p.height;
     this.target = new THREE.WebGLRenderTarget(resolution, Math.round((resolution * this.h) / this.w), {
       type: THREE.HalfFloatType,
-      samples: 2,
+      samples: 4,
+      // Mipmaps: no shimmering when the mirror is small on screen
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
     });
     const tex = this.target.texture;
+    tex.anisotropy = 8;
     // Seen from the virtual eye the glass is viewed from behind: flip horizontally
     tex.repeat.x = -1;
     tex.offset.x = 1;

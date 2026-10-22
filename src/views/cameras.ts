@@ -9,8 +9,12 @@ export const VIEW_LABELS: Record<ViewName, string> = { driver: 'Posto guida', ch
 const ORDER: ViewName[] = ['driver', 'chase', 'top'];
 
 export const DRIVER_FOV = 78; // vertical, wider than default so both A-pillars and the display fit
-const GLANCE_FOV = 30; // looking at a mirror narrows the view, like focusing on it (a monitor has far less resolution than the eye)
-const DISPLAY_FOV = 24; // demo close-up of the central display
+// Looking at a mirror narrows the view, like focusing on it (a monitor has far less resolution than the eye).
+// The right mirror is about twice as far from the eye: narrower, so it looks as large as the left one.
+const GLANCE_FOV = { left: 30, right: 20, rear: 30 } as const;
+const DISPLAY_FOV = 24;
+const MIRROR_FOCUS = 0.06; // rad: fully narrowed this close to a mirror (head-driven view)
+const MIRROR_FOCUS_RANGE = 0.3; // rad: from no narrowing to full narrowing // demo close-up of the central display
 const HEAD_SPEED = 9; // 1/s, head-turn smoothing
 const HEAD_SPEED_TRACKED = 30; // 1/s, following the tracked head (already filtered): low latency
 export type Glance = 'left' | 'right' | 'rear' | 'display' | null; // 'display': used by the demo
@@ -88,11 +92,28 @@ export class Views {
     this.curYaw += (target.yaw - this.curYaw) * a;
     this.curPitch += (target.pitch - this.curPitch) * a;
     this.driver.rotation.set(this.curPitch, -Math.PI / 2 + this.curYaw, 0);
-    const fov = this.glance && this.glanceZoom ? this.glanceZoom : this.glance === 'display' ? DISPLAY_FOV : this.glance ? GLANCE_FOV : DRIVER_FOV;
+    let fov = this.glance && this.glanceZoom ? this.glanceZoom : this.glance === 'display' ? DISPLAY_FOV : this.glance ? GLANCE_FOV[this.glance] : DRIVER_FOV;
+    if (this.headLook && !this.glance) fov = this.headFov();
     if (Math.abs(this.driver.fov - fov) > 0.01) {
       this.driver.fov += (fov - this.driver.fov) * a;
       this.driver.updateProjectionMatrix();
     }
+  }
+
+  /**
+   * Head-driven view: the field narrows progressively as the view comes onto a mirror,
+   * like focusing on it (full narrowing within MIRROR_FOCUS of the mirror centre).
+   */
+  private headFov() {
+    let fov = DRIVER_FOV;
+    for (const k of ['left', 'right', 'rear'] as const) {
+      const m = this.glanceAngles[k];
+      const d = Math.hypot(this.curYaw - m.yaw, this.curPitch - m.pitch);
+      const w = Math.max(0, Math.min(1, 1 - Math.max(0, d - MIRROR_FOCUS) / MIRROR_FOCUS_RANGE));
+      const s = w * w * (3 - 2 * w); // smoothstep
+      fov = Math.min(fov, DRIVER_FOV + (GLANCE_FOV[k] - DRIVER_FOV) * s);
+    }
+    return fov;
   }
 
   /** Current (smoothed) view direction and the mirror directions, for gaze logging. */
