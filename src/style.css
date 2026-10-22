@@ -26,7 +26,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   font: 11px ui-monospace, Menlo, monospace; color: rgba(255, 255, 255, 0.45);
 }
 .head-preview {
-  position: fixed; right: 12px; bottom: 12px; padding: 0; border-radius: 6px; overflow: hidden;
+  position: fixed; right: 12px; bottom: 96px; padding: 0; border-radius: 6px; overflow: hidden; z-index: 5;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); pointer-events: none;
 }
 .head-preview canvas { display: block; width: 200px; height: 214px; }
