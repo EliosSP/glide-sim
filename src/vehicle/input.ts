@@ -9,12 +9,14 @@ const isEditing = (e: KeyboardEvent) => e.target instanceof HTMLInputElement || 
 export class Keyboard {
   private down = new Set<string>();
   private handlers = new Map<string, () => void>();
+  /** When set, only these keys trigger commands (e.g. during the demo). */
+  allow: Set<string> | null = null;
 
   constructor() {
     window.addEventListener('keydown', (e) => {
       if (isEditing(e)) return;
       if (PREVENT.has(e.code)) e.preventDefault();
-      if (!e.repeat) this.handlers.get(e.code)?.();
+      if (!e.repeat && (!this.allow || this.allow.has(e.code))) this.handlers.get(e.code)?.();
       this.down.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.down.delete(e.code));

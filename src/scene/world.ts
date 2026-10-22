@@ -102,7 +102,7 @@ export class World {
     this.sun.target.position.set(x, 0, z);
   }
 
-  resize() {
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  resize(w = window.innerWidth, h = window.innerHeight) {
+    this.renderer.setSize(w, h);
   }
 }

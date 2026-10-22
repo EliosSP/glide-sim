@@ -23,7 +23,11 @@ export class Hud {
   }
 
   toggle() {
-    this.visible = !this.visible;
+    this.setVisible(!this.visible);
+  }
+
+  setVisible(v: boolean) {
+    this.visible = v;
     this.box.classList.toggle('hidden', !this.visible);
     this.help.classList.toggle('hidden', !this.visible);
   }

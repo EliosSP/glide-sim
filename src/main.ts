@@ -6,7 +6,7 @@ import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
 import { VehicleState, type DriveInput } from './vehicle/kinematics';
 import { Keyboard } from './vehicle/input';
-import { DEBUG_LAYER, Views, VIEW_LABELS } from './views/cameras';
+import { DEBUG_LAYER, Views, VIEW_LABELS, type Glance } from './views/cameras';
 import { Hud } from './ui/hud';
 import { CentralDisplay, type ReconLabel } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
@@ -16,13 +16,16 @@ import type { ParkPlan } from './planner/parallelPlanner';
 import { PHASE_LABELS } from './modes/assisted';
 import { GlideFlow, type FlowEvent } from './modes/flow';
 import { GlideAudio } from './audio/sounds';
+import { DemoDirector } from './modes/demo';
+import { Subtitles, TrialIndicator } from './ui/overlay';
 import { Actors, scenarioSettings, type ActorContext, type ActorSettings, type Scenario } from './actors/actors';
 import { ReconView } from './display/recon';
 import { RearCamera } from './display/rearCamera';
 
 // Single simulation clock: every module receives `now` from here. With ?fixedStep=1 each frame advances
 // a fixed 1/60 s whatever the real frame time (headless browsers, demo recording, automated tests).
-const FIXED_STEP = new URLSearchParams(location.search).get('fixedStep') === '1';
+const URL_PARAMS = new URLSearchParams(location.search);
+const FIXED_STEP = URL_PARAMS.get('fixedStep') === '1';
 const FRAME_DT = 1 / 60;
 let simTime = 0;
 const nowS = () => simTime;
@@ -182,17 +185,127 @@ soundFolder.add(audio, 'volume', 0, 1, 0.05).name('Volume');
 gui.addFolder('Debug').add(debug, 'showPath').name('Mostra traiettoria (debug)');
 
 function setScenario(sc: Scenario) {
+  applyScenario(sc);
+  resetAll();
+  flow.notice(sc === 'busy' ? 'Scenario animato' : 'Scenario vuoto', nowS());
+}
+
+function applyScenario(sc: Scenario) {
   Object.assign(actorSettings, scenarioSettings(sc));
   for (const c of actorsFolder.controllers) c.updateDisplay();
   actors.applySettings();
-  resetAll();
-  flow.notice(sc === 'busy' ? 'Scenario animato' : 'Scenario vuoto', nowS());
 }
 actors.applySettings();
 
 let guiVisible = false;
 gui.show(guiVisible);
 world.setTime('day');
+
+// --- test mode (?test=1): no debug information for the participant, discreet trial indicator ---
+const session = { participant: '', trial: 1, testMode: false, indicator: true };
+const indicator = new TrialIndicator();
+const sessionFolder = gui.addFolder('Sessione di test');
+sessionFolder.add(session, 'testMode').name('Modalità test').onChange((on: boolean) => setTestMode(on));
+sessionFolder.add(session, 'participant').name('ID partecipante').onChange(() => updateIndicator());
+sessionFolder.add(session, 'trial').name('Prova n.').listen().disable();
+sessionFolder.add(session, 'indicator').name('Indicatore (I)').onChange(() => updateIndicator());
+
+function updateIndicator() {
+  indicator.set(session.participant, session.trial);
+  indicator.show(session.testMode && session.indicator && !demo.active);
+}
+
+function setTestMode(on: boolean) {
+  session.testMode = on;
+  hud.setVisible(!on);
+  debug.showPath = false;
+  if (on) {
+    views.split = false;
+    views.current = 'driver';
+    gui.show((guiVisible = false));
+  }
+  for (const c of gui.controllersRecursive()) c.updateDisplay();
+  updateIndicator();
+}
+
+// --- pitch demo (?demo=1 or 0): scripted, no input, 16:9, debug UI hidden ---
+const subtitles = new Subtitles();
+const demoSettings = { subtitles: true, takeover: false };
+let demoGlance: Glance = null;
+const demo = new DemoDirector(
+  {
+    car,
+    flow,
+    bars: () => lastBarViews,
+    command: (c) => {
+      const now = nowS();
+      if (c === 'blinkerRight') flow.onBlinker('right', car, now);
+      else if (c === 'park') flow.onParkButton(car, now, contacts);
+      else if (c === 'assisted') flow.onModeChosen('assisted', car, now);
+      else if (c === 'auto') flow.onModeChosen('auto', car, now);
+      else if (c === 'start') flow.onStart(car, now);
+      else car.setGear(c === 'gearR' ? 'R' : 'D');
+    },
+    reset: (sc, x) => {
+      applyScenario(sc);
+      resetAll(x);
+    },
+    camera: (view, glance = null, opts = {}) => {
+      views.split = false;
+      views.current = view;
+      views.glanceZoom = opts.zoom ?? null;
+      views.closeUp = opts.closeUp ?? null;
+      demoGlance = glance;
+    },
+    subtitle: (text) => {
+      subtitleText = text;
+    },
+  },
+  demoSettings,
+);
+let subtitleText: string | null = null;
+let hudBeforeDemo = true;
+const demoFolder = gui.addFolder('Demo');
+demoFolder.add(demoSettings, 'subtitles').name('Sottotitoli (inglese)');
+demoFolder.add(demoSettings, 'takeover').name('Presa di controllo');
+demoFolder.add({ go: () => toggleDemo() }, 'go').name('Avvia / ferma demo (0)');
+
+function toggleDemo() {
+  if (demo.active) {
+    demo.stop();
+    keys.allow = null;
+    hud.setVisible(hudBeforeDemo && !session.testMode);
+    resetAll();
+  } else {
+    hudBeforeDemo = hud.visible;
+    hud.setVisible(false);
+    gui.show((guiVisible = false));
+    debug.showPath = false;
+    keys.allow = new Set(['Digit0', 'Escape', 'KeyF']);
+    demo.start();
+  }
+  demoGlance = null;
+  views.glanceZoom = null;
+  views.closeUp = null;
+  subtitleText = null;
+  layout();
+  updateIndicator();
+}
+
+/** Full window, or the largest 16:9 picture centred in it during the demo. */
+function layout() {
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  if (demo.active) {
+    w = Math.min(w, Math.round((h * 16) / 9));
+    h = Math.round((w * 9) / 16);
+  }
+  world.resize(w, h);
+  const c = world.renderer.domElement;
+  c.style.position = 'absolute';
+  c.style.left = `${Math.round((window.innerWidth - w) / 2)}px`;
+  c.style.top = `${Math.round((window.innerHeight - h) / 2)}px`;
+}
 
 // --- commands ---
 let gearMsg = '';
@@ -217,11 +330,19 @@ keys.on('KeyF', () => {
   else void document.documentElement.requestFullscreen().catch(() => {});
 });
 keys.on('KeyN', () => setScenario(actorSettings.scenario === 'empty' ? 'busy' : 'empty'));
-keys.on('Escape', () => resetAll());
+keys.on('Escape', () => (demo.active ? toggleDemo() : resetAll()));
 keys.on('Backspace', () => resetAll()); // in fullscreen Esc only leaves fullscreen
+keys.on('Digit0', () => toggleDemo());
+keys.on('KeyI', () => {
+  session.indicator = !session.indicator;
+  updateIndicator();
+});
 
-function resetAll() {
-  car.reset(START.x, START.z, START.heading);
+/** Back to the start of the street; every reset is a new trial. */
+function resetAll(x: number = START.x) {
+  session.trial++;
+  updateIndicator();
+  car.reset(x, START.z, START.heading);
   views.resetChase();
   gearMsg = '';
   contacts = 0;
@@ -259,7 +380,13 @@ function removeObstacle() {
   recon.setObject('i3', null);
 }
 
-window.addEventListener('resize', () => world.resize());
+window.addEventListener('resize', () => layout());
+layout();
+session.trial = 1;
+if (URL_PARAMS.get('test') === '1') setTestMode(true);
+else updateIndicator();
+// The demo starts once the environment has had a moment to load
+if (URL_PARAMS.get('demo') === '1') setTimeout(() => toggleDemo(), 1500);
 
 // --- loop ---
 const timer = new THREE.Timer();
@@ -306,7 +433,7 @@ function frame(time: number) {
   const realDt = Math.min(timer.getDelta(), 0.1);
   const dt = FIXED_STEP ? FRAME_DT : realDt;
   acc += dt;
-  const input = keys.drive();
+  const input = demo.active ? demo.update(dt) : keys.drive();
   let steps = FIXED_STEP ? Math.round(FRAME_DT / PHYSICS_DT) : Math.floor(acc / PHYSICS_DT);
   acc = FIXED_STEP ? 0 : acc - steps * PHYSICS_DT;
   while (steps-- > 0) {
@@ -318,7 +445,10 @@ function frame(time: number) {
   rig.root.updateMatrixWorld();
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
-  views.glance = keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
+  views.glance = demo.active
+    ? demoGlance
+    : keys.isDown('KeyZ') ? 'left' : keys.isDown('KeyX') ? 'right' : keys.isDown('KeyW') ? 'rear' : null;
+  subtitles.set(demo.active ? subtitleText : null, world.renderer.domElement.getBoundingClientRect());
 
   const now = nowS();
   actors.update(dt, now, { x: car.x, z: car.z, heading: car.heading }, actorContext());
@@ -424,8 +554,9 @@ const eyeWorld = new THREE.Vector3();
 
 function render() {
   const r = world.renderer;
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const size = r.getSize(new THREE.Vector2());
+  const w = size.x;
+  const h = size.y;
 
   // Shadow map once per frame, shared by the mirror and main passes
   r.shadowMap.needsUpdate = true;
@@ -462,5 +593,5 @@ function render() {
 }
 
 // Expose for debugging in the console
-Object.assign(window, { actors, audio, actorSettings, debug, gui, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { actors, audio, actorSettings, debug, gui, demo, demoSettings, session, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
 requestAnimationFrame(frame);

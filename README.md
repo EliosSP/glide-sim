@@ -36,6 +36,8 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 | H | nasconde la UI di debug |
 | G (o F1) | pannello parametri (su Mac F1 senza fn regola la luminosità) |
 | F | schermo intero |
+| 0 | avvia / ferma la demo per il pitch |
+| I | modalità test: mostra / nasconde l'indicatore partecipante · prova |
 | Esc / Backspace | reset scenario (in schermo intero Esc esce solo dal fullscreen) |
 
 ## Cosa simula
@@ -77,8 +79,20 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 - **Qualità grafica**: alta / bassa (passa a bassa da sola se gli FPS restano sotto 40 per 3 s)
 - **Debug → Mostra traiettoria**: la traiettoria pianificata disegnata sulla strada (default spento). Si vede solo nelle viste esterna e dall'alto, mai dal posto guida, negli specchietti o nella telecamera.
 
+## Demo per il pitch
+
+`?demo=1` (o tasto 0, o pannello → Demo) avvia una sequenza scriptata senza input: avvicinamento → assistito completo → reset → autonomo con preview, nello scenario Animato. Il pilota automatico genera gli stessi comandi della tastiera dentro il loop di fisica, quindi la demo usa esattamente la logica dei test. Camera coreografata (posto guida, primi piani del display e degli specchietti, vista esterna, dall'alto), formato 16:9 con bande nere, UI di debug nascosta, sottotitoli brevi in inglese. Dura circa 2 minuti.
+
+- **Pannello → Demo**: sottotitoli on/off, "Presa di controllo" (spenta): a metà manovra autonoma il pilota frena, compare "Hai preso il controllo", poi Glide riprende e finisce.
+- Esc o 0 fermano la demo e resettano. Per registrare: schermo intero (F), poi un registratore di schermo.
+
+## Modalità test
+
+`?test=1` (o pannello → Sessione di test → Modalità test): HUD, aiuto, traiettoria e pannello nascosti, vista posto guida. In basso a sinistra un indicatore discreto con ID partecipante e numero di prova (tasto I per nasconderlo). L'ID si inserisce nel pannello (G); la prova aumenta a ogni reset (Esc, Backspace, N). Lo schermo intero va attivato con F, perché il browser non lo permette senza un gesto dell'utente. Il log CSV arriva con la milestone 12.
+
 ## Parametri URL
 
+- `?demo=1`: avvia la demo. `?test=1`: modalità test. Si combinano (es. `?demo=1&fixedStep=1`).
 - `?fixedStep=1`: ogni frame fa avanzare la simulazione di 1/60 s esatti, indipendentemente dagli FPS reali (browser headless, registrazioni, test). Tutta la simulazione usa un unico orologio.
 
 ## Stato
@@ -95,7 +109,7 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 Prima del pitch (4 novembre 2026):
 - [x] 9. Bug B1–B6 (traiettoria solo da fuori, P annulla l'autonomo, auto ferma durante la ripianificazione, tasti Mac, barra sul bordo inferiore dello specchietto) + orologio unico e `?fixedStep=1`
 - [x] 10. Retrovisore interno + ambiente (fase A)
-- [ ] 11. Modalità demo + modalità test
+- [x] 11. Modalità demo + modalità test
 - [ ] 12. Log CSV + pannello parametri completo
 
 Dopo il pitch:

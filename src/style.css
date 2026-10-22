@@ -16,3 +16,12 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   color: #fff; background: rgba(0,0,0,.5); border-radius: 4px; pointer-events: none;
 }
 .hidden { display: none !important; }
+.subtitle {
+  position: fixed; text-align: center; pointer-events: none;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; font-weight: 500; line-height: 1.35;
+  color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 12px rgba(0, 0, 0, 0.6);
+}
+.trial-indicator {
+  position: fixed; left: 10px; bottom: 8px; pointer-events: none;
+  font: 11px ui-monospace, Menlo, monospace; color: rgba(255, 255, 255, 0.45);
+}
