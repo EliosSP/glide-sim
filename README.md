@@ -38,6 +38,7 @@ Apri l'indirizzo mostrato (di solito http://localhost:5173) in Chrome.
 | F | schermo intero |
 | 0 | avvia / ferma la demo per il pitch |
 | I | modalità test: mostra / nasconde l'indicatore partecipante · prova |
+| L | esporta i due CSV del log |
 | Esc / Backspace | reset scenario (in schermo intero Esc esce solo dal fullscreen) |
 
 ## Cosa simula
@@ -74,6 +75,9 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 - **Anticipo barra** (autonomo): 0,5–1,5 s, default 1 s
 - **Cordolo poco visibile (I2)**, **Ostacolo imprevisto (I3)**
 - **Scenario e attori**: Vuoto / Animato, pedoni, auto che aspetta dietro, distanza auto dietro (1,5–8 m), si infila troppo vicina, ciclista, traffico corsia opposta, pericolo (hook `onHazard`, spento)
+- **Barra luminosa** (dal vivo): tolleranza tacca (± 5–10% dell'escursione, default 7%), anticipo del preannuncio (1,0–2,5 s, default 1,75), segmenti del countdown (4–12, default 8), lampeggi di conferma (numero, durata acceso/spento), colore (default bianco freddo `#e3f1ff`; le tinte arancioni vengono rifiutate), luminosità, "Turchese in autonomo", **Scala di grigi** (filtro sull'immagine, per verificare che gli stati si capiscano senza colore)
+- **Spazio target**: lunghezza in metri, applicata ricaricando la pagina (`?space=`)
+- **Preset**: "Salva preset" scarica un JSON con tutti i valori del pannello (esclusi partecipante, prova e demo); "Carica preset" li riapplica, così ogni sessione parte identica
 - **Suoni**: volume
 - **Ora**: giorno / sera
 - **Qualità grafica**: alta / bassa (passa a bassa da sola se gli FPS restano sotto 40 per 3 s)
@@ -88,7 +92,15 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 
 ## Modalità test
 
-`?test=1` (o pannello → Sessione di test → Modalità test): HUD, aiuto, traiettoria e pannello nascosti, vista posto guida. In basso a sinistra un indicatore discreto con ID partecipante e numero di prova (tasto I per nasconderlo). L'ID si inserisce nel pannello (G); la prova aumenta a ogni reset (Esc, Backspace, N). Lo schermo intero va attivato con F, perché il browser non lo permette senza un gesto dell'utente. Il log CSV arriva con la milestone 12.
+`?test=1` (o pannello → Sessione di test → Modalità test): HUD, aiuto, traiettoria e pannello nascosti, vista posto guida. In basso a sinistra un indicatore discreto con ID partecipante e numero di prova (tasto I per nasconderlo). L'ID si inserisce nel pannello (G); la prova aumenta a ogni reset (Esc, Backspace, N). Lo schermo intero va attivato con F, perché il browser non lo permette senza un gesto dell'utente.
+
+## Log per i test
+
+Il log è sempre attivo (pannello → Sessione di test → Log attivo), tranne durante la demo. Resta in memoria e in `localStorage`: un reload non perde i dati e la numerazione delle prove continua. "Esporta CSV" (o L) scarica due file, `glide_<partecipante>_<data>_events.csv` e `..._summary.csv`. "Nuova sessione…" (con conferma) svuota il log.
+
+**events.csv**, una riga per evento: `session_id, participant_id, trial, t_ms` (dall'inizio della prova, orologio di simulazione), `event, phase, side, value, extra_json`. Eventi: `trial_start, approach, space_evaluated, park_button, park_active, mode_chosen, phase, confirm, point_reached, over, steer_error` (value = errore in frazione dell'escursione), `contact, preview_shown, auto_start, takeover, low_confidence, trajectory_change, switch_to_assisted, manual, cancel, done, auto_done, glance` (Z/X/W: start/end con durata, proxy dello sguardo), `reset`.
+
+**summary.csv**, una riga per prova: esito (`done` / `cancel` / `reset` / `in_corso`), modalità, tempo totale e per fase dell'assistito, durata dell'autonomo, numero di "oltre", errori di sterzo (%) e media, contatti, distanze finali da cordolo, auto davanti e dietro (cm), prese di controllo, passaggi all'assistito, annullamenti, sguardi, tutti i parametri attivi (`params_json`).
 
 ## Parametri URL
 
@@ -110,7 +122,7 @@ Prima del pitch (4 novembre 2026):
 - [x] 9. Bug B1–B6 (traiettoria solo da fuori, P annulla l'autonomo, auto ferma durante la ripianificazione, tasti Mac, barra sul bordo inferiore dello specchietto) + orologio unico e `?fixedStep=1`
 - [x] 10. Retrovisore interno + ambiente (fase A)
 - [x] 11. Modalità demo + modalità test
-- [ ] 12. Log CSV + pannello parametri completo
+- [x] 12. Log CSV + pannello parametri completo
 
 Dopo il pitch:
 - [ ] 13. Test automatici (`__glide`, vitest, Playwright)

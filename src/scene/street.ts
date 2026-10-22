@@ -27,16 +27,26 @@ function canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D)
 
 // CC0 textures from Poly Haven (see README credits), 1K, loaded from public/textures/<name>/
 const loader = new THREE.TextureLoader();
-const texCache = new Map<string, THREE.Texture>();
+const texCache = new Map<string, { base: THREE.Texture; clones: THREE.Texture[]; loaded: boolean }>();
 function phTexture(name: string, map: 'diff' | 'nor' | 'rough') {
   const key = `${name}/${map}`;
-  let t = texCache.get(key);
-  if (!t) {
-    t = loader.load(`/textures/${key}.jpg`);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.anisotropy = 8;
-    if (map === 'diff') t.colorSpace = THREE.SRGBColorSpace;
-    texCache.set(key, t);
+  let e = texCache.get(key);
+  if (!e) {
+    const entry = { base: null as unknown as THREE.Texture, clones: [] as THREE.Texture[], loaded: false };
+    // Clones share the image; they are flagged for upload only once it has arrived
+    entry.base = loader.load(`/textures/${key}.jpg`, () => {
+      entry.loaded = true;
+      for (const c of entry.clones) c.needsUpdate = true;
+    });
+    entry.base.wrapS = entry.base.wrapT = THREE.RepeatWrapping;
+    entry.base.anisotropy = 8;
+    if (map === 'diff') entry.base.colorSpace = THREE.SRGBColorSpace;
+    texCache.set(key, (e = entry));
+  }
+  const t = e.base.clone();
+  if (!e.loaded) {
+    t.version = 0; // clone() flags an upload; without the image yet that only produces warnings
+    e.clones.push(t);
   }
   return t;
 }
@@ -46,7 +56,7 @@ function phMaps(name: string, rx: number, ry: number, which: ('diff' | 'nor' | '
   const out: Partial<Record<'map' | 'normalMap' | 'roughnessMap', THREE.Texture>> = {};
   const key = { diff: 'map', nor: 'normalMap', rough: 'roughnessMap' } as const;
   for (const m of which) {
-    const t = phTexture(name, m).clone();
+    const t = phTexture(name, m);
     t.repeat.set(rx, ry);
     out[key[m]] = t;
   }
