@@ -18,6 +18,7 @@ import type { ParkPlan } from './planner/parallelPlanner';
 import { PHASE_LABELS } from './modes/assisted';
 import { GlideFlow, type FlowEvent } from './modes/flow';
 import { GlideAudio } from './audio/sounds';
+import { Narrator } from './audio/narrator';
 import { DemoDirector } from './modes/demo';
 import { Subtitles, TrialIndicator } from './ui/overlay';
 import { Logger, download } from './ui/logger';
@@ -476,6 +477,11 @@ function setTestMode(on: boolean) {
 // --- pitch demo (?demo=1 or 0): scripted, no input, 16:9, debug UI hidden ---
 const subtitles = new Subtitles();
 const demoSettings = { subtitles: true, takeover: false };
+// Voice-over: mp3 per line in public/voice/ (see README); the subtitles are its transcript
+const narrator = new Narrator();
+narrator.onLine = (text) => {
+  subtitleText = demoSettings.subtitles ? text : null;
+};
 let demoGlance: Glance = null;
 const demo = new DemoDirector(
   {
@@ -502,9 +508,7 @@ const demo = new DemoDirector(
       views.closeUp = opts.closeUp ?? null;
       demoGlance = glance;
     },
-    subtitle: (text) => {
-      subtitleText = text;
-    },
+    voice: narrator,
   },
   demoSettings,
 );
@@ -512,6 +516,8 @@ let subtitleText: string | null = null;
 let hudBeforeDemo = true;
 const demoFolder = gui.addFolder('Demo');
 demoFolder.add(demoSettings, 'subtitles').name('Sottotitoli (inglese)');
+demoFolder.add(narrator, 'enabled').name('Voce narrante');
+demoFolder.add(narrator, 'volume', 0, 1, 0.05).name('Volume voce');
 demoFolder.add(demoSettings, 'takeover').name('Presa di controllo');
 demoFolder.add({ go: () => toggleDemo() }, 'go').name('Avvia / ferma demo (0)');
 

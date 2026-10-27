@@ -101,6 +101,19 @@ Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio
 - **Pannello → Demo**: sottotitoli on/off, "Presa di controllo" (spenta): a metà manovra autonoma il pilota frena, compare "Hai preso il controllo", poi Glide riprende e finisce.
 - Esc o 0 fermano la demo e resettano. Per registrare: schermo intero (F), poi un registratore di schermo.
 
+### Voce della demo
+
+Una voce narrante in inglese (narratore calmo, stile keynote) accompagna la demo; i sottotitoli sono la sua trascrizione esatta. Il copione è in `src/modes/narration.json` (una frase per momento della demo), l'audio in `public/voice/<id>.mp3`, un file per frase. La demo aspetta la fine di ogni frase nei punti di sosta; se un file manca, quella frase compare solo come sottotitolo (la demo funziona anche senza audio). Pannello → Demo: "Voce narrante" on/off e "Volume voce".
+
+**Generare l'audio con ElevenLabs** (serve un account; la chiave resta sul vostro computer):
+1. Su elevenlabs.io scegliete una voce nella Voice Library (cercate per esempio "narrator calm", inglese neutro, timbro medio-basso) e copiatene il **Voice ID**; la chiave API è in Profile → API Keys.
+2. Dalla cartella del progetto: `ELEVENLABS_API_KEY=… ELEVENLABS_VOICE_ID=… npm run voice` genera i file mancanti. Con `-- --force` li rigenera tutti; con `-- 07_steer 12_done` solo quelle frasi.
+3. Ascoltate la demo (tasto 0) e fate il commit di `public/voice/`.
+
+Impostazioni usate (in `tools/generate-voice.mjs`): modello `eleven_multilingual_v2`, stabilità 0,6, somiglianza 0,75, stile 0,1, velocità 0,95; ogni frase riceve anche la precedente e la successiva per un'intonazione continua. Per cambiare una battuta: modificate il testo in `narration.json` e rigenerate quel file. Con un altro servizio o una voce registrata basta rispettare i nomi dei file (`01_intro.mp3`, …).
+
+**Registrare il video con la voce:** aprite la pagina, cliccate una volta (il browser non fa partire l'audio senza un gesto) e premete 0; usate un registratore che catturi anche l'audio del browser (es. OBS, oppure la registrazione schermo di macOS con il microfono di sistema/BlackHole). Con `?demo=1` la demo parte da sola ma senza un clic le prime frasi restano mute.
+
 ## Modalità test
 
 `?test=1` (o pannello → Sessione di test → Modalità test): HUD, aiuto, traiettoria e pannello nascosti, vista posto guida. In basso a sinistra un indicatore discreto con ID partecipante e numero di prova (tasto I per nasconderlo). L'ID si inserisce nel pannello (G); la prova aumenta a ogni reset (Esc, Backspace, N). Lo schermo intero va attivato con F, perché il browser non lo permette senza un gesto dell'utente.

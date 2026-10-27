@@ -6,6 +6,7 @@ import type { Scenario } from '../actors/actors';
 import { MAX_STEER } from '../planner/geometry';
 import { startXFor } from '../planner/parallelPlanner';
 import type { GlideFlow } from './flow';
+import type { LineId, Narrator } from '../audio/narrator';
 
 /** What the demo needs from the app: the same objects and commands the keyboard uses. */
 export interface DemoHost {
@@ -16,7 +17,8 @@ export interface DemoHost {
   reset(scenario: Scenario, x: number): void;
   /** zoom: field of view while glancing; closeUp: chase camera right behind a mirror, from outside. */
   camera(view: ViewName, glance?: Glance, opts?: { zoom?: number; closeUp?: 'left' | 'right' }): void;
-  subtitle(text: string | null): void;
+  /** Voice-over (also drives the subtitles: each line is shown when it starts). */
+  voice: Narrator;
 }
 
 export interface DemoSettings {
@@ -36,7 +38,7 @@ type Frame = Generator<void, void, void>;
 /**
  * Scripted pitch demo: approach → full assisted manoeuvre → reset → autonomous with preview
  * (→ optional takeover). An autopilot produces DriveInput inside the normal physics loop, so the
- * demo runs exactly the logic used in the tests. Subtitles are in English (pitch).
+ * demo runs exactly the logic used in the tests. English voice-over (narration.json), subtitles = its transcript.
  */
 export class DemoDirector {
   active = false;
@@ -60,7 +62,7 @@ export class DemoDirector {
     this.active = false;
     this.script = null;
     this.control = () => IDLE;
-    this.host.subtitle(null);
+    this.host.voice.stop();
   }
 
   /** Called once per frame before physics; returns the input for this frame. */
@@ -86,9 +88,9 @@ export class DemoDirector {
     // 1. Approach
     h.reset('busy', START.x);
     h.camera('chase');
-    this.say('Glide: parallel parking you can trust, and delegate when you want to.');
+    this.say('01_intro');
     yield* this.drive(() => (car.x < -18 ? 5 : this.stopAt(1.8 - car.x, 2.2)), () => car.x > -30);
-    this.say('Below 15 km/h the central display maps the free spaces. Blue means your car fits.');
+    this.say('02_approach');
     h.camera('driver');
     yield* this.drive(() => (car.x < -18 ? 5 : this.stopAt(1.8 - car.x, 2.2)), () => car.x > -14);
     h.camera('driver', 'display');
@@ -97,51 +99,50 @@ export class DemoDirector {
 
     // 2. Space evaluation and P
     h.command('blinkerRight');
-    this.say('Right indicator: Glide checks the space. It fits, and it says by how much.');
-    yield* this.wait(3.2);
+    this.say('03_evaluate');
+    yield* this.waitVoice(3.2);
     h.command('park');
-    this.say('P: Glide recommends a mode, explains why, and splits what it does from what you do.');
-    yield* this.wait(4.5);
+    this.say('04_park');
+    yield* this.waitVoice(4.5);
 
     // 3. Assisted manoeuvre
     h.command('assisted');
     h.camera('driver');
-    this.say('Assisted: you drive. For everything you need while moving, you look outside, at the mirrors.');
-    yield* this.wait(2.5);
+    this.say('05_assisted');
+    yield* this.waitVoice(2.5);
     h.camera('driver', 'right', MIRROR_ZOOM);
-    this.say('Moving: segments switch off as you approach the point where to stop.');
+    this.say('06_positioning');
     yield* this.drive(() => {
       const m = h.flow.maneuver;
       return m ? this.stopAt(startXFor(m.plan, car.z) - car.x, 1.2) : 0;
     }, () => h.flow.maneuver?.phase !== 'positioning');
 
-    this.say('Stopped: the bar follows the steering wheel up to the notch. Two blinks and a tone: right.');
+    this.say('07_steer');
     yield* this.steerTo(() => h.flow.maneuver?.plan.steer1 ?? 0, () => this.confirmed('right'));
-    yield* this.wait(1.0);
+    yield* this.waitVoice(1.0);
     h.command('gearR');
-    this.say('Reverse: the right mirror counts down to the counter-steer point; the left one pre-announces it.');
+    this.say('08_reverse');
     yield* this.reverseWhile('reverse1', 1.0, 1.7);
     h.camera('driver', 'left', MIRROR_ZOOM);
-    this.say('The light snaps to the left mirror: counter-steer, same gesture, other side.');
+    this.say('09_countersteer');
     yield* this.steerTo(() => {
       const v = h.bars()?.left;
       return v?.kind === 'steer' && v.target !== null ? -v.target * MAX_STEER : car.steer;
     }, () => this.confirmed('left'));
-    yield* this.wait(0.8);
+    yield* this.waitVoice(0.8);
     h.camera('top');
-    this.say('Last reverse: the left mirror counts down to where to straighten the wheels.');
+    this.say('10_final_reverse');
     yield* this.reverseWhile('reverse2', 0.9, 0);
-    this.say('Inside the space the mirrors switch off. Sensors beep only in the last centimetres.');
+    this.say('11_inside');
     h.camera('driver', 'display');
     yield* this.steerTo(() => 0, () => h.flow.screen === 'done');
-    this.say('Parked. The feedback is factual: first attempt, distance from the curb.');
-    yield* this.wait(4.5);
+    this.say('12_done');
+    yield* this.waitVoice(4.5);
 
     // 4. Autonomous with preview
-    this.say(null);
     h.reset('busy', -14);
     h.camera('chase');
-    this.say('Now the autonomous mode, on a busier street.');
+    this.say('13_auto_intro');
     yield* this.drive(() => this.stopAt(1.8 - car.x, 2.0), () => this.stopped() && car.x > 1.5);
     h.command('blinkerRight');
     yield* this.wait(1.2);
@@ -149,43 +150,50 @@ export class DemoDirector {
     yield* this.wait(1.5);
     h.camera('driver', 'display');
     h.command('auto');
-    this.say('Before moving, Glide previews the whole manoeuvre and its critical points: closest distance, fastest stretch.');
-    yield* this.wait(6);
+    this.say('14_preview');
+    yield* this.waitVoice(6);
     h.command('start');
-    this.say('"I steer, accelerate and brake. You supervise: brake or steer to stop me."');
-    yield* this.wait(3);
+    this.say('15_start');
+    yield* this.waitVoice(3);
     h.camera('chase', null, { closeUp: 'right' });
-    this.say('The mirror light leads the wheel by one second, and tells people outside where the car is going.');
+    this.say('16_outside');
     const run = () => h.flow.auto;
     yield* this.until(() => (run()?.t ?? 0) > (run()?.timeline.total ?? 1) * 0.45 || h.flow.screen !== 'autoRunning');
 
     if (this.settings.takeover && h.flow.screen === 'autoRunning') {
       h.camera('driver', 'display');
-      this.say('Brake or steer and Glide stops at once, then asks how to continue.');
+      this.say('17_takeover');
       this.takingOver = true;
       yield* this.drive(() => 0, () => h.flow.screen === 'autoStopped', true);
       this.takingOver = false;
-      yield* this.wait(3.5);
-      this.say('Resume: Glide continues from exactly where it stopped.');
+      yield* this.waitVoice(3.5);
+      this.say('18_resume');
       h.command('start');
       yield* this.wait(2);
       h.camera('chase');
     }
     h.camera('top');
-    this.say('The critical points are met exactly as announced in the preview.');
+    this.say('19_as_previewed');
     yield* this.until(() => h.flow.screen === 'done' || h.flow.screen === 'autoStopped');
     h.camera('driver', 'display');
-    this.say('Parked as previewed. Control is back to you.');
-    yield* this.wait(5);
-    this.say('Glide. Advise, never impose.');
-    yield* this.wait(4);
-    this.say(null);
+    this.say('20_auto_done');
+    yield* this.waitVoice(4);
+    this.say('21_outro');
+    yield* this.waitVoice(3);
+    yield* this.wait(1);
   }
 
   // ---------- helpers ----------
 
-  private say(text: string | null) {
-    this.host.subtitle(this.settings.subtitles ? text : null);
+  /** Queues a line of the voice-over (the subtitle follows the voice). */
+  private say(id: LineId) {
+    this.host.voice.say(id);
+  }
+
+  /** Waits at least `seconds`, and until the voice has finished (a missing clip does not wait). */
+  private *waitVoice(seconds: number): Frame {
+    yield* this.wait(seconds);
+    yield* this.until(() => !this.host.voice.busy);
   }
 
   private stopped() {

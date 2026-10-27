@@ -1,0 +1,23 @@
+{
+  "01_intro": "This is Glide. Parallel parking you can trust, and hand over when you want to.",
+  "02_approach": "As you slow down, the central display maps the free spaces. Blue means your car fits.",
+  "03_evaluate": "Signal right, and Glide checks the space. It fits, and Glide tells you by how much.",
+  "04_park": "Press P. Glide recommends a mode, explains why, and makes clear what it does, and what you do.",
+  "05_assisted": "In assisted mode, you drive. Everything you need while moving is outside, on the mirrors.",
+  "06_positioning": "As you roll forward, the segments go out one by one, counting down to where you stop.",
+  "07_steer": "Now, standing still, the light follows your steering wheel to the notch. Two blinks and a tone: that's right.",
+  "08_reverse": "In reverse, the right mirror counts down to the turning point. The left one is already announcing what comes next.",
+  "09_countersteer": "The light moves to the left mirror. Same gesture, other side.",
+  "10_final_reverse": "One last reverse. The left mirror tells you when to straighten up.",
+  "11_inside": "Inside the space, the mirrors go dark. The sensors speak only in the final centimetres.",
+  "12_done": "Parked. And the feedback is simply factual: first attempt, and how close you are to the curb.",
+  "13_auto_intro": "Now, let's hand over. Autonomous mode, on a busier street.",
+  "14_preview": "Before moving, Glide shows you the whole manoeuvre, and its critical points: the closest distance, and the fastest stretch.",
+  "15_start": "Glide steers, accelerates and brakes. You supervise. A touch of the brake or the wheel, and it stops.",
+  "16_outside": "The mirror light moves a second ahead of the wheel, telling everyone outside where the car is going.",
+  "17_takeover": "Brake, and Glide stops at once. Then it asks how you'd like to continue.",
+  "18_resume": "Resume, and it carries on from exactly where it stopped.",
+  "19_as_previewed": "Every critical point arrives just as the preview promised.",
+  "20_auto_done": "Parked, as previewed. Control returns to you.",
+  "21_outro": "Glide. It advises. It never imposes."
+}
