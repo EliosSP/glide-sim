@@ -8,6 +8,7 @@ import * as THREE from 'three';
  */
 export type BarView =
   | { kind: 'off' }
+  | { kind: 'on' } // Glide armed (after P): steady bar, nothing to follow yet
   | {
       kind: 'steer';
       fill: number;
@@ -71,8 +72,8 @@ export class LightBar {
     return this.painter.style;
   }
 
-  draw(v: BarView, now: number) {
-    if (this.painter.paint(v, now)) this.texture.needsUpdate = true;
+  draw(v: BarView, now: number, alpha = 1) {
+    if (this.painter.paint(v, now, alpha)) this.texture.needsUpdate = true;
   }
 }
 
@@ -98,12 +99,12 @@ export class BarPainter {
   }
 
   /** Returns true when the canvas changed. */
-  paint(v: BarView, now: number): boolean {
+  paint(v: BarView, now: number, alpha = 1): boolean {
     // Redraw only when something visible changes
     const blinking =
       (v.kind === 'steer' && (!this.blinkVisible(v.blinkStart, now) || v.fill > (v.target ?? 2) + v.tol)) ||
       (v.kind === 'count' && (v.blinkStart !== null || v.overshoot > 0));
-    const key = JSON.stringify(v) + (blinking ? Math.floor(now * 20) : '') + this.style.color + this.style.brightness;
+    const key = JSON.stringify(v) + (blinking ? Math.floor(now * 20) : '') + this.style.color + this.style.brightness + alpha.toFixed(2);
     if (key === this.lastKey) return false;
     this.lastKey = key;
 
@@ -115,12 +116,22 @@ export class BarPainter {
     if (v.kind === 'off') return true;
 
     const lit = this.litColor();
+    g.globalAlpha = alpha; // the unlit diffuser stays opaque; only the light fades
+    if (v.kind === 'on') {
+      g.fillStyle = lit;
+      g.strokeStyle = lit;
+      g.lineWidth = 3;
+      g.strokeRect(X0, 18, X1 - X0, 28);
+      g.globalAlpha = 0.85 * alpha;
+      g.fillRect(X0 + 8, 26, X1 - X0 - 16, 12);
+      return true;
+    }
     const xAt = (f: number) => X0 + Math.max(0, Math.min(1, f)) * (X1 - X0);
     g.fillStyle = lit;
     g.strokeStyle = lit;
 
     if (v.kind === 'announce') {
-      g.globalAlpha = v.alpha;
+      g.globalAlpha = v.alpha * alpha;
       g.lineWidth = 4;
       g.setLineDash([22, 14]);
       g.strokeRect(X0, 18, X1 - X0, 28); // rail

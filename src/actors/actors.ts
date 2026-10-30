@@ -50,6 +50,8 @@ const CYCLIST_SPEED = 5.5; // m/s, ~20 km/h
 const CENTRE = (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;
 const LANE_Z = 1.75; // Jacopo's lane (right)
 const OPP_Z = -1.7; // opposite lane
+const QUEUE_GAP = 2.5; // m, between cars queuing behind the waiting car
+const QUEUE_SPACING = 9; // m, between the cars of the queue when they arrive
 
 /** A car driving along a lane in direction dir (+1 = +X), origin at the rear axle like Jacopo's. */
 class LaneCar {
@@ -111,7 +113,7 @@ interface PedestrianState {
 
 /**
  * Other actors of the street: pedestrians on the sidewalks, the car that arrives and waits
- * behind, the cyclist passing on the left during the counter-steer, traffic in the opposite lane.
+ * behind with a short queue after it, the cyclist passing on the left during the counter-steer, traffic in the opposite lane.
  */
 export class Actors {
   onSettled: () => void = () => {}; // the waiting car has stopped behind
@@ -121,6 +123,7 @@ export class Actors {
   private waiting: LaneCar;
   private waitingState: 'off' | 'coming' | 'leaving' = 'off';
   private settledX = -Infinity; // where the waiting car last stopped
+  private queue: LaneCar[]; // behind the waiting car, nearest first
   private traffic: LaneCar[];
   private trafficTimer = 2;
   private rider: Rider;
@@ -133,8 +136,9 @@ export class Actors {
     public settings: ActorSettings,
   ) {
     this.waiting = new LaneCar(0x7d8b5a, LANE_Z, 1, scene, 'suv');
-    const styles: CarStyle[] = ['sedan', 'hatch', 'mpv'];
-    this.traffic = [0xa7a9ac, 0x253247, 0x8c2f2a].map((c, i) => new LaneCar(c, OPP_Z, -1, scene, styles[i]));
+    this.queue = [new LaneCar(0xc9c6bf, LANE_Z, 1, scene, 'hatch'), new LaneCar(0x2f3f52, LANE_Z, 1, scene, 'sedan')];
+    const styles: CarStyle[] = ['sedan', 'hatch', 'mpv', 'suv', 'hatch', 'sedan'];
+    this.traffic = [0xa7a9ac, 0x253247, 0x8c2f2a, 0xe4e2dc, 0x4a5a3c, 0x17191c].map((c, i) => new LaneCar(c, OPP_Z, -1, scene, styles[i]));
     this.rider = createCyclist();
     this.rider.root.visible = false;
     scene.add(this.rider.root);
@@ -170,7 +174,9 @@ export class Actors {
   /** P accepted: a car arrives from behind and waits. */
   onParkActivated(ego: Pose) {
     if (!this.settings.waitingCar || this.waitingState !== 'off') return;
-    this.waiting.spawn(ego.x - VEHICLE.rearOverhang - 34 - VEHICLE.wheelbase - VEHICLE.frontOverhang, 7);
+    const x = ego.x - VEHICLE.rearOverhang - 34 - VEHICLE.wheelbase - VEHICLE.frontOverhang;
+    this.waiting.spawn(x, 7);
+    this.queue.forEach((c, i) => c.active || c.spawn(x - (i + 1) * QUEUE_SPACING, 7));
     this.waitingState = 'coming';
     this.settledX = -Infinity;
   }
@@ -178,6 +184,7 @@ export class Actors {
   /** Back to the start (Esc): manoeuvre-related actors disappear. */
   reset() {
     this.removeWaiting();
+    this.queue.forEach((c, i) => this.removeQueued(c, i));
     this.cyclist.active = false;
     this.cyclist.armed = true;
     this.rider.root.visible = false;
@@ -185,7 +192,10 @@ export class Actors {
 
   /** Called after toggling actors in the panel. */
   applySettings() {
-    if (!this.settings.waitingCar) this.removeWaiting();
+    if (!this.settings.waitingCar) {
+      this.removeWaiting();
+      this.queue.forEach((c, i) => this.removeQueued(c, i));
+    }
     if (!this.settings.cyclist) {
       this.cyclist.active = false;
       this.rider.root.visible = false;
@@ -200,6 +210,11 @@ export class Actors {
     this.collisions.removeObject('waiting-car');
   }
 
+  private removeQueued(c: LaneCar, i: number) {
+    c.despawn();
+    this.collisions.removeObject(`queue-${i}`);
+  }
+
   private removeTraffic(c: LaneCar, i: number) {
     c.despawn();
     this.collisions.removeObject(`traffic-${i}`);
@@ -209,6 +224,7 @@ export class Actors {
   markers(): ActorMarker[] {
     const out: ActorMarker[] = [];
     if (this.waiting.active) out.push({ id: 'waiting-car', kind: 'car', x: this.waiting.centre, z: this.waiting.z, heading: 0 });
+    this.queue.forEach((c, i) => c.active && out.push({ id: `queue-${i}`, kind: 'car', x: c.centre, z: c.z, heading: 0 }));
     this.traffic.forEach((c, i) => c.active && out.push({ id: `traffic-${i}`, kind: 'car', x: c.centre, z: c.z, heading: Math.PI }));
     if (this.cyclist.active) out.push({ id: 'cyclist', kind: 'bike', x: this.cyclist.x, z: this.cyclist.z, heading: 0 });
     if (this.settings.pedestrians) this.pedestrians.forEach((p, i) => out.push({ id: `ped-${i}`, kind: 'person', x: p.x, z: p.z, heading: p.dir > 0 ? 0 : Math.PI }));
@@ -220,6 +236,7 @@ export class Actors {
     const body = footprint(ego);
     if (this.settings.pedestrians) this.updatePedestrians(dt, now, body);
     this.updateWaiting(dt, ego, body, ctx);
+    this.updateQueue(dt, body);
     if (this.settings.traffic) this.updateTraffic(dt, ego, body);
     if (this.settings.cyclist) this.updateCyclist(dt, now, ego, body, ctx);
   }
@@ -270,6 +287,22 @@ export class Actors {
     if ((this.waitingState === 'leaving' && c.x > egoFront + 90) || c.x < egoFront - 150) this.removeWaiting();
   }
 
+  /** Each car follows the one ahead; it also stops behind Jacopo if nothing is left between them. */
+  private updateQueue(dt: number, body: [number, number][]) {
+    const egoFront = Math.max(...body.map(([x]) => x));
+    this.queue.forEach((c, i) => {
+      if (!c.active) return;
+      const ahead = i === 0 ? this.waiting : this.queue[i - 1];
+      let free = Infinity;
+      if (ahead.active && ahead.x > c.x) free = ahead.x - VEHICLE.rearOverhang - c.front - QUEUE_GAP;
+      const egoX = this.intrusion(body, c.z - 1.1, c.z + 1.1, 'min');
+      if (egoX !== null && egoX > c.front - 0.5) free = Math.min(free, egoX - c.front - QUEUE_GAP);
+      c.drive(dt, this.waitingState === 'coming' ? 7 : 9, free);
+      this.collisions.addObject(`queue-${i}`, c.centre, c.z, VEHICLE.length / 2, VEHICLE.width / 2, 'car');
+      if (c.x > egoFront + 90 || c.x < egoFront - 150) this.removeQueued(c, i);
+    });
+  }
+
   private updateTraffic(dt: number, ego: Pose, body: [number, number][]) {
     this.trafficTimer -= dt;
     const free = this.traffic.find((c) => !c.active);
@@ -277,7 +310,7 @@ export class Actors {
     // A new car appears ahead, far enough from the previous one
     if (this.trafficTimer <= 0 && free && (!last || last.x < ego.x + 100)) {
       free.spawn(ego.x + 120, 8.3);
-      this.trafficTimer = 5 + ((this.time * 7.3) % 7);
+      this.trafficTimer = 2.5 + ((this.time * 7.3) % 3.5);
     }
     // Front to back (towards -X): each car follows Jacopo's intrusion, the cyclist and the car ahead
     const order = this.traffic.filter((c) => c.active).sort((a, b) => a.x - b.x);
@@ -306,17 +339,13 @@ export class Actors {
       cy.active = true;
       const frontX = Math.max(...body.map(([x]) => x));
       cy.x = frontX - CYCLIST_SPEED * 3.5;
-      cy.z = 0.95;
+      cy.z = Math.min(0.95, this.laneEdge(body, cy.x) - 0.75);
       cy.v = CYCLIST_SPEED;
       this.rider.root.visible = true;
     }
     if (!cy.active) return;
     // Keep clear on the left of Jacopo's body and of the waiting car, looking a few metres ahead
-    let edge = Infinity;
-    for (const [x, z] of body) if (x > cy.x - 1.5 && x < cy.x + 8) edge = Math.min(edge, z);
-    const w = this.waiting;
-    if (w.active && w.front > cy.x - 1.5 && w.x - VEHICLE.rearOverhang < cy.x + 8) edge = Math.min(edge, w.z - VEHICLE.width / 2);
-    const target = Math.min(0.95, edge - 0.75);
+    const target = Math.min(0.95, this.laneEdge(body, cy.x) - 0.75);
     // Swerving into the opposite lane only when no car is coming
     const oncoming = this.traffic.some((c) => c.active && c.front > cy.x && c.front < cy.x + 30);
     const wait = target < -0.3 && oncoming;
@@ -334,6 +363,16 @@ export class Actors {
       cy.active = false;
       this.rider.root.visible = false;
     }
+  }
+
+  /** Left edge of what is in Jacopo's lane around x (his body, the waiting car and its queue). */
+  private laneEdge(body: [number, number][], x: number) {
+    let edge = Infinity;
+    for (const [bx, z] of body) if (bx > x - 1.5 && bx < x + 8) edge = Math.min(edge, z);
+    for (const c of [this.waiting, ...this.queue]) {
+      if (c.active && c.front > x - 1.5 && c.x - VEHICLE.rearOverhang < x + 8) edge = Math.min(edge, c.z - VEHICLE.width / 2);
+    }
+    return edge;
   }
 
   /** Empty hook for the hazard behaviour (to be designed by the group): called once per approach. */

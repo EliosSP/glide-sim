@@ -123,7 +123,7 @@ export class AssistedManeuver {
           this.range = clamp(Math.abs(d), 1, 5);
           this.needRange = false;
         }
-        this.instruction = d > p.pointTol ? `Avanti ${d.toFixed(1)} m` : d < -p.pointTol ? `Indietro ${(-d).toFixed(1)} m` : 'Fermati qui';
+        this.instruction = d > p.pointTol ? `Forward ${d.toFixed(1)} m` : d < -p.pointTol ? `Back ${(-d).toFixed(1)} m` : 'Stop here';
         const view = this.countdown(d, now, 'right');
         if (Math.abs(d) <= p.pointTol && stopped && this.reachedFor(now)) this.go('steer1', now);
         return { left: OFF, right: view };
@@ -132,7 +132,7 @@ export class AssistedManeuver {
       case 'steer1': {
         const target = this.plan.steer1 / MAX_STEER;
         const view = this.steering(fillRight, target, now, 'right');
-        this.instruction = view.kind === 'steer' && view.inTarget ? 'Giusto: inizia la retro' : 'Gira il volante a destra fino alla tacca';
+        this.instruction = view.kind === 'steer' && view.inTarget ? 'Right: start reversing' : 'Turn the wheel right to the notch';
         if (car.speed < -0.05) {
           this.recordSteerError(fillRight - target, now);
           const k1 = car.steer > 0.02 ? kappaOf(car.steer) : kappaOf(this.plan.steer1);
@@ -151,8 +151,8 @@ export class AssistedManeuver {
         const remaining = this.limitByObstacles(pose, k1, sol.remaining);
         const view = this.countdown(remaining, now, 'right');
         this.guide = { kappa: k1, remaining };
-        this.instruction = remaining > p.pointTol ? 'Retro: guarda lo specchietto destro' : remaining < -p.pointTol ? 'Troppo indietro: vai avanti' : 'Fermati qui';
-        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = "Fermati qui: dietro non c'è spazio";
+        this.instruction = remaining > p.pointTol ? 'Reverse: watch the right mirror' : remaining < -p.pointTol ? 'Too far back: go forward' : 'Stop here';
+        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = 'Stop here: no room behind';
         // Pre-announce the counter-steer in the left mirror
         let left: BarView = OFF;
         const eta = remaining / Math.max(Math.abs(car.speed), 0.4);
@@ -170,7 +170,7 @@ export class AssistedManeuver {
 
       case 'steer2': {
         const view = this.steering(fillLeft, this.steer2Target, now, 'left');
-        this.instruction = view.kind === 'steer' && view.inTarget ? 'Giusto: continua la retro' : 'Gira il volante a sinistra fino alla tacca';
+        this.instruction = view.kind === 'steer' && view.inTarget ? 'Right: keep reversing' : 'Turn the wheel left to the notch';
         if (car.speed < -0.05) {
           this.recordSteerError(fillLeft - this.steer2Target, now);
           const k2 = car.steer < -0.02 ? kappaOf(car.steer) : -kappaOf(this.steer2Target * MAX_STEER);
@@ -185,15 +185,15 @@ export class AssistedManeuver {
         const remaining = this.limitByObstacles(pose, k2, car.heading / k2); // > 0 while still angled towards the curb
         const view = this.countdown(remaining, now, 'left');
         this.guide = { kappa: k2, remaining };
-        this.instruction = remaining > p.pointTol ? 'Retro: guarda lo specchietto sinistro' : remaining < -p.pointTol ? 'Troppo: vai avanti' : 'Fermati e raddrizza';
-        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = "Fermati qui: dietro non c'è spazio";
+        this.instruction = remaining > p.pointTol ? 'Reverse: watch the left mirror' : remaining < -p.pointTol ? 'Too far: go forward' : 'Stop and straighten';
+        if (this.blocked && Math.abs(remaining) <= p.pointTol) this.instruction = 'Stop here: no room behind';
         if (Math.abs(remaining) <= p.pointTol && stopped && this.reachedFor(now)) this.go('inside', now);
         return { left: view, right: OFF };
       }
 
       case 'inside': {
         // Notch off; only parking sensors remain. "P" engages once stopped with the wheels straight.
-        this.instruction = 'Raddrizza le ruote';
+        this.instruction = 'Straighten the wheels';
         const straight = Math.abs(car.steer) < 0.05 * MAX_STEER;
         if (stopped && straight) {
           this.stillSince ??= now;

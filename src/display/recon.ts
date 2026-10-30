@@ -202,7 +202,7 @@ export class ReconView {
       this.rings = p.points.map((cp) => {
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(0.32, 0.46, 32),
-          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false }),
+          new THREE.MeshBasicMaterial({ color: cp.kind === 'sensor' ? 0xff6b6b : cp.kind === 'fast' ? 0xffffff : 0xffb454, side: THREE.DoubleSide, depthTest: false }),
         );
         ring.rotation.x = -Math.PI / 2;
         ring.position.copy(cp.position).setY(0.08);

@@ -176,6 +176,8 @@ export interface CarRig {
   steeringSpin?: THREE.Object3D;
   displayMesh?: THREE.Mesh;
   mirrors: { left: THREE.Group; right: THREE.Group };
+  /** Physical P button under the display (Jacopo's car only). */
+  pButton?: { cap: THREE.Object3D; set(k: number, active: boolean): void };
   rearMirror?: THREE.Group; // interior rear-view mirror (Jacopo's car only); no light bar on it
 }
 
@@ -273,9 +275,10 @@ export function createCar(opts: { color: number; interior: boolean; style?: CarS
   for (const s of [-1, 1]) {
     const foot = new THREE.Vector3(1.78, belt - 0.01, s * 0.86); // on the door, at the base of the A-pillar
     const top = new THREE.Vector3(1.72, mirrorY - 0.05, s * 0.97); // under the inner end of the housing
-    body.add(arm(foot, top, 0.07, 0.035, S.trimMat));
-    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.06), S.trimMat);
+    body.add(taperedArm(foot, top, 0.044, 0.03, S.trimMat));
+    const plate = new THREE.Mesh(new RoundedBoxGeometry(0.2, 0.03, 0.09, 3, 0.012), S.trimMat); // base cover on the door
     plate.position.set(1.75, belt - 0.005, s * 0.875);
+    plate.castShadow = true;
     body.add(plate);
   }
 
@@ -284,40 +287,88 @@ export function createCar(opts: { color: number; interior: boolean; style?: CarS
   return rig;
 }
 
-/** Box from a to b (any direction), thickness w × d. */
-function arm(a: THREE.Vector3, b: THREE.Vector3, w: number, d: number, m: THREE.Material) {
+/** Round arm from a to b, thicker at a (radius ra) than at b (radius rb). */
+function taperedArm(a: THREE.Vector3, b: THREE.Vector3, ra: number, rb: number, m: THREE.Material) {
   const dir = b.clone().sub(a);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, dir.length(), d), m);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rb, ra, dir.length(), 20), m);
   mesh.position.copy(a).addScaledVector(dir, 0.5);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
   mesh.castShadow = true;
   return mesh;
 }
 
+/** Centred rounded-rectangle outline on a shape or hole path (cy: vertical offset). */
+function roundedRectPath<T extends THREE.Path>(p: T, w: number, h: number, r: number, cy = 0): T {
+  const x = w / 2;
+  const y = h / 2;
+  p.moveTo(-x + r, cy - y);
+  p.lineTo(x - r, cy - y);
+  p.absarc(x - r, cy - y + r, r, -Math.PI / 2, 0, false);
+  p.lineTo(x, cy + y - r);
+  p.absarc(x - r, cy + y - r, r, 0, Math.PI / 2, false);
+  p.lineTo(-x + r, cy + y);
+  p.absarc(-x + r, cy + y - r, r, Math.PI / 2, Math.PI, false);
+  p.lineTo(-x, cy - y + r);
+  p.absarc(-x + r, cy - y + r, r, Math.PI, Math.PI * 1.5, false);
+  return p;
+}
+
+/** Flat ring (rounded outline with a rounded hole) in the mirror's back plane, extruded backwards from x = xFront. */
+function mirrorRing(outer: [number, number, number], hole: [number, number, number], holeY: number, depth: number, xFront: number, bevel: number) {
+  const shape = roundedRectPath(new THREE.Shape(), ...outer);
+  shape.holes.push(roundedRectPath(new THREE.Path(), ...hole, holeY));
+  const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 3, curveSegments: 18 });
+  g.rotateY(-Math.PI / 2); // shape (u, v) → (z, y); the extrusion runs towards -x
+  g.translate(xFront, 0, 0);
+  return g;
+}
+
 function makeMirror(side: number, paintMat: THREE.Material, trimMat: THREE.Material, y: number) {
   const g = new THREE.Group();
   g.name = side < 0 ? 'mirror-left' : 'mirror-right';
   g.position.set(1.7, y, side * 1.04);
-  const shell = new THREE.Mesh(new RoundedBoxGeometry(0.1, 0.155, 0.225, 6, 0.04), paintMat); // rounded, modern
-  shell.castShadow = true;
-  shell.name = 'shell';
-  g.add(shell);
-  // Short neck under the inner end of the housing, meeting the arm fixed to the body
-  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.06), trimMat);
-  neck.position.set(0.01, -0.07, -side * 0.07);
-  g.add(neck);
+  const gloss = new THREE.MeshPhysicalMaterial({ color: 0x0c0e11, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.05 });
+  const put = (geo: THREE.BufferGeometry, m: THREE.Material, x = 0, yy = 0, z = 0, shadow = true) => {
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.set(x, yy, z);
+    mesh.castShadow = shadow;
+    g.add(mesh);
+    return mesh;
+  };
+
+  // Head: rounded body that narrows towards the front (aerodynamic), with a larger lower part for the light
+  const head = new RoundedBoxGeometry(0.1, 0.175, 0.225, 8, 0.05);
+  const pos = head.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const f = (pos.getX(i) + 0.05) / 0.1; // 0 at the back, 1 at the front
+    const k = 1 - 0.22 * f * f;
+    pos.setY(i, pos.getY(i) * k - 0.012 * f * f);
+    pos.setZ(i, pos.getZ(i) * k);
+  }
+  head.computeVertexNormals();
+  put(head, paintMat, 0, -0.01).name = 'shell';
+
+  // Back: painted rim round the glass, and a thin black gasket against the glass edge
+  put(mirrorRing([0.222, 0.172, 0.05], [0.198, 0.113, 0.032], 0.001, 0.01, -0.042, 0.002), paintMat, 0, -0.01, 0);
+  put(mirrorRing([0.2, 0.115, 0.034], [0.188, 0.103, 0.028], 0, 0.002, -0.0535, 0), trimMat, 0, -0.009, 0, false);
+
+  // Neck under the inner end of the head, meeting the arm fixed to the body
+  put(new RoundedBoxGeometry(0.07, 0.07, 0.09, 4, 0.02), trimMat, 0.01, -0.085, -side * 0.075);
+
   const glass = new THREE.Mesh(
     new THREE.PlaneGeometry(0.19, 0.105),
     new THREE.MeshPhysicalMaterial({ color: 0x222830, metalness: 1, roughness: 0.05 }),
   );
   glass.name = 'glass';
   glass.rotation.y = -Math.PI / 2; // faces -X (backwards)
-  glass.position.set(-0.0515, -0.009, 0); // just proud of the housing back; rounded corners (alpha mask) follow its shape
+  glass.position.set(-0.0515, -0.009, 0); // recessed in the rim; rounded corners (alpha mask) follow its shape
   g.add(glass);
-  // Mount for the light bar: thin strip on the lower rim, below the glass, facing backwards
+
+  // Light: a glossy black channel along the lower rim, the bar sits on its face
+  put(new RoundedBoxGeometry(0.012, 0.026, 0.205, 3, 0.006), gloss, -0.0515, -0.0803, 0, false);
   const mount = new THREE.Object3D();
   mount.name = 'bar-mount';
-  mount.position.set(-0.053, -0.069, 0);
+  mount.position.set(-0.0585, -0.0803, 0);
   mount.rotation.y = -Math.PI / 2;
   g.add(mount);
   return g;

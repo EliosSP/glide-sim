@@ -198,4 +198,42 @@ export function buildInterior(rig: CarRig) {
   b.add(rm);
   mesh(new THREE.CylinderGeometry(0.01, 0.012, 0.06, 8), M.dark, b, 1.37, 1.355, 0);
   rig.rearMirror = rm;
+
+  // Physical Park button under the display, on the dashboard face: round cap with a "P", lit ring when Glide is armed
+  const btn = new THREE.Group();
+  btn.position.set(1.452, 0.78, 0.08);
+  btn.rotation.z = Math.PI / 2; // local +y points to the driver (-x)
+  b.add(btn);
+  mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.008, 28), M.dark, btn, 0, 0.002, 0); // bezel
+  const ring = mesh(new THREE.TorusGeometry(0.0265, 0.0022, 8, 40).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x0f62fe }), btn, 0, 0.0065, 0);
+  ring.visible = false;
+  const cap = new THREE.Group();
+  btn.add(cap);
+  const pCanvas = document.createElement('canvas');
+  pCanvas.width = pCanvas.height = 128;
+  const pg = pCanvas.getContext('2d')!;
+  pg.fillStyle = '#d9dde1';
+  pg.fillRect(0, 0, 128, 128);
+  pg.fillStyle = '#16191c';
+  pg.font = '700 84px system-ui, sans-serif';
+  pg.textAlign = 'center';
+  pg.textBaseline = 'middle';
+  pg.fillText('P', 64, 70);
+  const pTex = new THREE.CanvasTexture(pCanvas);
+  pTex.colorSpace = THREE.SRGBColorSpace;
+  mesh(new THREE.CylinderGeometry(0.0235, 0.0235, 0.012, 28), new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.5 }), cap, 0, 0.008, 0);
+  const pTop = new THREE.Mesh(new THREE.CircleGeometry(0.0225, 28).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: pTex }));
+  // Disc normal along +y (the button's axis, towards the driver); image right → car +z (driver's right), image up → car +y
+  pTop.rotation.y = -Math.PI / 2;
+  pTop.position.y = 0.0142;
+  cap.add(pTop);
+  rig.pButton = {
+    cap: pTop,
+    /** k: how far the cap is pushed in (0..1); active: the ring is lit. */
+    set(k: number, active: boolean) {
+      cap.position.y = -0.006 * k;
+      ring.visible = active;
+    },
+  };
 }
+

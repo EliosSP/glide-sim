@@ -33,11 +33,10 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 | Z / X (tieni premuto) | guarda lo specchietto sinistro / destro (la testa si gira e la vista si stringe) |
 | W (tieni premuto) | guarda il retrovisore interno |
 | T / Shift+T | segui la testa con la webcam (on/off) / ricalibra |
-| Q / E | freccia sinistra / destra (a destra valuta lo spazio evidenziato) |
-| P | pulsante Park Assist (di nuovo: annulla; in autonomo frena e restituisce il controllo) |
-| 1 / 2 | sul display: Assistito / Autonomo |
-| Invio | "Avvia" (dopo la preview) · "Riprendi in autonomo" (dopo una presa di controllo) |
-| A | "Passa all'assistito" (dalla preview o dal punto in cui l'auto si è fermata) |
+| Q / E | freccia sinistra / destra (non serve più per scegliere lo spazio) |
+| P | pulsante Park Assist, fisico sotto il display (di nuovo: annulla; in autonomo frena e restituisce il controllo). Accende le luci fisse sugli specchietti e mostra subito la preview dell'autonomo |
+| Invio | "OK" sulla preview (avvia la manovra) · "Riprendi in autonomo" (dopo una presa di controllo) |
+| A | passa all'assistito (dalla preview o dal punto in cui l'auto si è fermata) |
 | M | "Finisco io a mano" |
 | ↓ / Spazio / ← / → in autonomo | presa di controllo: l'auto si ferma subito |
 | C | cambia vista: posto guida → esterna → dall'alto |
@@ -48,6 +47,7 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 | G (o F1) | pannello parametri (su Mac F1 senza fn regola la luminosità) |
 | F | schermo intero |
 | 0 | avvia / ferma la demo per il pitch |
+| 9 | avvia / ferma il video concept (senza voce né sottotitoli); registrazione dal pannello (G) |
 | I | modalità test: mostra / nasconde l'indicatore partecipante · prova |
 | L | esporta i due CSV del log |
 | Esc / Backspace | reset scenario (in schermo intero Esc esce solo dal fullscreen) |
@@ -62,13 +62,13 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 - **Barre luminose:** tutti gli stati del capitolo 2 (pronto, in corso, in obiettivo, oltre, countdown, punto raggiunto, preannuncio, scatto, spento). Lo zero è sempre sul lato verso l'auto. La barra è sul bordo inferiore del guscio, visibile da dentro e da fuori.
 - **Fine manovra:** "P inserita" quando l'auto è ferma nello spazio con le ruote dritte da 1 s.
 
-- **Flusso sul display:** sotto i 15 km/h compare la ricostruzione 3D con gli spazi (blu = ci sta) e quello più vicino evidenziato; la freccia a destra lo valuta ("ci sta / non ci sta" e con che margine); P mostra la modalità consigliata con il motivo e, per ogni modalità, cosa fa Glide e cosa fai tu. Durante la manovra il display mostra solo l'essenziale (telecamera posteriore con gli stessi obiettivi se attivata nel pannello). Dentro lo spazio: sensori e telecamera. Alla fine: rinforzo fattuale.
+- **Flusso sul display:** sotto i 15 km/h compare la ricostruzione 3D a tutta larghezza con gli spazi (blu = ci sta); lo spazio più vicino è già quello scelto (nel video lo si sceglie con un tocco). P accende le luci fisse sugli specchietti e mostra subito la preview dell'autonomo: mappa con la manovra animata, i punti più a rischio (anelli arancioni) e il tratto più veloce (in bianco), sotto il tasto Avvia e una piccola X per annullare. Durante la manovra il display mostra solo l'essenziale (telecamera posteriore con gli stessi obiettivi se attivata nel pannello). Dentro lo spazio: sensori e telecamera. Alla fine: rinforzo fattuale.
 
 - **Modalità autonoma:** l'auto segue esattamente la traiettoria della preview, quindi i punti critici annunciati (distanza minima, tratto più rapido, punto dove i sensori vedono male) sono quelli della manovra. Negli specchietti la barra (senza tacca) arriva all'angolo che il volante avrà 1 s dopo; in movimento i segmenti contano fino al prossimo cambio di comportamento. Profilo velocità Fluido (default) o Brusco.
 - **Interruzioni:** I1 presa di controllo con freno o volante, con tre scelte (riprendi, assistito da qui, a mano); I2 "cordolo poco visibile": Glide si ferma dove l'aveva annunciato e propone l'assistito; I3 "ostacolo imprevisto" (pulsante nel pannello): l'auto si ferma, mostra la nuova traiettoria per 3,5 s (tenendo il freno: sterzo o freno in quel momento valgono come presa di controllo) e riparte. Se non esiste una manovra sicura lo dice e propone assistito o guida a mano.
 
-- **Scenari:** *Vuoto* (default: solo auto parcheggiate) e *Animato* (pedoni, auto che aspetta dietro, ciclista, traffico nella corsia opposta). Si cambia con N o dal pannello; ogni attore si può anche accendere e spegnere da solo.
-- **Auto che aspetta dietro:** arriva quando premi P e si ferma dietro di te alla distanza impostata (default 6 m). È un ostacolo reale: conta nelle collisioni e nei sensori, e in autonomo, quando si ferma, Glide ricontrolla il resto della traiettoria. Con "Si infila troppo vicina" (60 cm) Glide si ferma e dice "L'auto dietro è troppo vicina". Dopo essersi fermata non avanza più mentre fai manovra; quando sei dentro lo spazio riparte.
+- **Scenari:** *Vuoto* (default: solo auto parcheggiate) e *Animato* (pedoni, auto che aspetta dietro con altre due in coda, ciclista, traffico più fitto nella corsia opposta). Si cambia con N o dal pannello; ogni attore si può anche accendere e spegnere da solo.
+- **Auto che aspetta dietro:** arriva quando premi P e si ferma dietro di te alla distanza impostata (default 4,5 m). È un ostacolo reale: conta nelle collisioni e nei sensori, e in autonomo, quando si ferma, Glide ricontrolla il resto della traiettoria. Con "Si infila troppo vicina" (60 cm) Glide si ferma e dice "L'auto dietro è troppo vicina". Dopo essersi fermata non avanza più mentre fai manovra; quando sei dentro lo spazio riparte.
 - **Auto dietro in assistito:** se si ferma prima della retro e la manovra non è più libera, Glide la ricalcola; se non ci sta più, mostra "La manovra non ci sta · L'auto dietro è troppo vicina" e si ferma. Se è vicina (meno di 60 cm dalla traiettoria), quando inizi la retro compare da sola la telecamera posteriore. Se continuando a quel modo la toccheresti, nello specchietto il countdown finisce prima ("Fermati qui: dietro non c'è spazio") e Glide prosegue col controsterzo da lì. Vale per qualunque ostacolo sul percorso.
 - **Ciclista:** arriva da dietro a sinistra e ti passa accanto durante il controsterzo (assistito: quando inizia il controsterzo; autonomo: 2,5 s prima). Si sposta a sinistra per non toccare né te né l'auto dietro, e aspetta se dalla corsia opposta arriva qualcuno.
 - **Pedoni** sui due marciapiedi e **traffico** nella corsia opposta (si ferma se invadi la sua corsia). Sul display gli attori compaiono nella ricostruzione 3D (pedoni e ciclista in giallo).
@@ -77,7 +77,7 @@ Il simulatore è pubblicato su GitHub Pages: **https://eliossp.github.io/glide-s
 
 ### Lunghezza degli spazi
 
-Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio di almeno **auto + 2,0 m**. Decisione del gruppo: lo spazio "stretto" è auto + 2,2 m; nella fila c'è anche uno spazio da auto + 1,0 m, che Glide segnala come "non ci sta in una manovra", e uno ampio (7,2 m) dove consiglia l'autonomo.
+Con quest'auto (passo 2,6 m, sterzata 35°) una sola manovra richiede uno spazio di almeno **auto + 2,0 m**. Lo spazio "stretto" è auto + 2,05 m (6,15 m), appena sopra il limite della manovra singola (a fine autonomo l'auto avanza e si centra); nella fila c'è anche uno spazio da auto + 1,0 m, che Glide segnala come "non ci sta in una manovra", e uno ampio (7,2 m) dove consiglia l'autonomo.
 
 ## Parametri (G o F1)
 

@@ -13,13 +13,21 @@ export const DRIVER_FOV = 62; // vertical (~85° horizontal on 16:10): natural, 
 // The right mirror is about twice as far from the eye: narrower, so it looks as large as the left one.
 const GLANCE_FOV = { left: 30, right: 20, rear: 30 } as const;
 const DISPLAY_FOV = 24;
+const DASH_FOV = 36;
 /** At rest the eyes look slightly right of straight ahead, towards the middle of the windscreen (as from a real seat). */
 const REST_YAW = -0.08; // rad (Views convention: negative = right)
 const MIRROR_FOCUS = 0.06; // rad: fully narrowed this close to a mirror (head-driven view)
 const MIRROR_FOCUS_RANGE = 0.3; // rad: from no narrowing to full narrowing // demo close-up of the central display
 const HEAD_SPEED = 9; // 1/s, head-turn smoothing
 const HEAD_SPEED_TRACKED = 30; // 1/s, following the tracked head (already filtered): low latency
-export type Glance = 'left' | 'right' | 'rear' | 'display' | null; // 'display': used by the demo
+/** Demo video: eyes turn part of the way towards a mirror, wide field, slow settle (no zoom, no lock-on). */
+export interface Gaze {
+  reach: number; // 0..1, share of the way from the resting direction to the mirror
+  speed: number; // 1/s, head smoothing
+  fov: number; // degrees
+}
+export const NATURAL_GAZE: Gaze = { reach: 0.7, speed: 4, fov: 52 };
+export type Glance = 'left' | 'right' | 'rear' | 'display' | 'dash' | null; // 'display', 'dash' (display + P button): used by the demo
 
 const _m = new THREE.Vector3();
 
@@ -29,12 +37,18 @@ export class Views {
   readonly top = new THREE.PerspectiveCamera(40, 1, 0.5, 300);
   current: ViewName = 'driver';
   split = false;
+  /** Share of the width taken by the driver view in the split screen (the outside view gets the rest). */
+  splitRatio = 0.5;
+  /** The 'bird' view: street-aligned (the street runs up the picture), tilted bird's eye following the car along the street; z is the fixed line looked at across the street. */
+  bird = { back: 9, height: 10, half: 17, lookAhead: -2.5, z: 3.0 };
 
   /** Held glance key: the head turns towards that mirror. */
   glance: Glance = null;
-  /** Demo: narrower field while glancing (zoom on a mirror), and outside close-up of a mirror in the chase view. */
+  /** Demo: narrower field while glancing (zoom on a mirror); outside close-ups in the chase view: behind a mirror, or the bird's eye of the split screen. */
   glanceZoom: number | null = null;
-  closeUp: 'left' | 'right' | null = null;
+  closeUp: 'left' | 'right' | 'bird' | null = null;
+  /** Demo video: natural gaze towards the mirrors (null = the glance goes straight onto the mirror, as with Z/X/W). */
+  gaze: Gaze | null = null;
   /** Head tracking: view direction from the webcam (replaces the mouse while set). */
   headLook: { yaw: number; pitch: number } | null = null;
 
@@ -67,7 +81,14 @@ export class Views {
       right: angles(rig.mirrors.right),
       rear: rig.rearMirror ? angles(rig.rearMirror) : { yaw: -0.6, pitch: 0.1 },
       display: rig.displayMesh ? angles(rig.displayMesh) : { yaw: -0.5, pitch: -0.2 },
+      dash: { yaw: -0.5, pitch: -0.2 },
     };
+    if (rig.displayMesh && rig.pButton) {
+      // Halfway between the display and the P button under it
+      const d = angles(rig.displayMesh);
+      const p = angles(rig.pButton.cap);
+      this.glanceAngles.dash = { yaw: (d.yaw + p.yaw) / 2, pitch: (d.pitch + p.pitch) / 2 };
+    }
 
     this.top.up.set(0, 0, -1); // driving direction points right on screen, curb at the bottom
     this.chase.layers.enable(DEBUG_LAYER);
@@ -92,12 +113,16 @@ export class Views {
 
   private updateHead(dt: number) {
     const head = this.headLook && { yaw: this.headLook.yaw + REST_YAW, pitch: this.headLook.pitch };
-    const target = this.glance ? this.glanceAngles[this.glance] : head ?? { yaw: this.yaw, pitch: this.pitch };
-    const a = 1 - Math.exp(-dt * (this.headLook && !this.glance ? HEAD_SPEED_TRACKED : HEAD_SPEED));
+    const gaze = this.gaze && (this.glance === 'left' || this.glance === 'right' || this.glance === 'rear') ? this.gaze : null;
+    const full = this.glance ? this.glanceAngles[this.glance] : head ?? { yaw: this.yaw, pitch: this.pitch };
+    const target = gaze
+      ? { yaw: this.yaw + (full.yaw - this.yaw) * gaze.reach, pitch: this.pitch + (full.pitch - this.pitch) * gaze.reach }
+      : full;
+    const a = 1 - Math.exp(-dt * (this.gaze ? this.gaze.speed : this.headLook && !this.glance ? HEAD_SPEED_TRACKED : HEAD_SPEED));
     this.curYaw += (target.yaw - this.curYaw) * a;
     this.curPitch += (target.pitch - this.curPitch) * a;
     this.driver.rotation.set(this.curPitch, -Math.PI / 2 + this.curYaw, 0);
-    let fov = this.glance && this.glanceZoom ? this.glanceZoom : this.glance === 'display' ? DISPLAY_FOV : this.glance ? GLANCE_FOV[this.glance] : DRIVER_FOV;
+    let fov = gaze ? gaze.fov : this.glance && this.glanceZoom ? this.glanceZoom : this.glance === 'display' ? DISPLAY_FOV : this.glance === 'dash' ? DASH_FOV : this.glance ? GLANCE_FOV[this.glance] : DRIVER_FOV;
     if (this.headLook && !this.glance) fov = this.headFov();
     if (Math.abs(this.driver.fov - fov) > 0.01) {
       this.driver.fov += (fov - this.driver.fov) * a;
@@ -153,23 +178,29 @@ export class Views {
     // Chase: behind and above, smoothed
     // Stay between the building fronts even when the car is turned across the street
     const maxZ = ROAD.curbZ + ROAD.sidewalkWidth - 0.6;
-    const target = new THREE.Vector3(cx - c * 7.5, 3.6, THREE.MathUtils.clamp(cz - s * 7.5, -maxZ, maxZ));
+    const back = 7.5;
+    const bird = this.closeUp === 'bird';
+    const target = bird
+      ? new THREE.Vector3(cx - this.bird.back, this.bird.height, this.bird.z)
+      : new THREE.Vector3(cx - c * back, 3.6, THREE.MathUtils.clamp(cz - s * back, -maxZ, maxZ));
     if (!this.chaseInit) {
       this.chasePos.copy(target);
       this.chaseInit = true;
     }
     this.chasePos.lerp(target, 1 - Math.exp(-dt * 4));
     this.chase.position.copy(this.chasePos);
-    this.chase.lookAt(cx + c * 3, 0.8, cz + s * 3);
-    if (this.closeUp) {
+    if (bird) this.chase.lookAt(cx + this.bird.lookAhead, 0, this.bird.z);
+    else this.chase.lookAt(cx + c * 3, 0.8, cz + s * 3);
+    if (this.closeUp === 'left' || this.closeUp === 'right') {
       // Behind the mirror and a little outside it: what the car behind or a cyclist sees
       const side = this.closeUp === 'left' ? -1 : 1;
       const m = this.rig.mirrors[this.closeUp].getWorldPosition(_m);
       this.chase.position.set(m.x - c * 1.0 - s * side * 0.3, m.y + 0.1, m.z - s * 1.0 + c * side * 0.3);
       this.chase.lookAt(m.x, m.y - 0.04, m.z);
     }
-    const chaseFov = this.closeUp ? 28 : 55;
-    if (this.chase.fov !== chaseFov) {
+    const birdFov = THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(this.bird.half)) / this.chase.aspect)), 25, 80);
+    const chaseFov = bird ? birdFov : this.closeUp ? 28 : 55;
+    if (Math.abs(this.chase.fov - chaseFov) > 0.01) {
       this.chase.fov = chaseFov;
       this.chase.updateProjectionMatrix();
     }

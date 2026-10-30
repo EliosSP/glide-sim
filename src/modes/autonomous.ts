@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { VEHICLE } from '../config';
 import type { Collisions, NearestObstacle } from '../vehicle/collision';
+import type { FreeSpace } from '../scene/parkingLayout';
 import type { BarView } from '../mirrors/lightBar';
 import { MAX_STEER, advance, footprint, kappaOf, type Pose } from '../planner/geometry';
 import { chooseCounterSteer, finalZ, solveSwitch, type ParkPlan } from '../planner/parallelPlanner';
@@ -185,7 +186,15 @@ export function buildTimeline(
   tl.addSteer(counter, 'arc2');
   tl.addDrive(-Math.abs(tl.end.pose.heading / kappaOf(counter)), 'arc2');
   tl.addSteer(0, 'end');
+  addCentring(tl, plan.space);
   return tl;
+}
+
+/** Last stretch of the manoeuvre: wheel straight, forward to the middle of the space (the two arcs end close to the car behind). */
+export function addCentring(tl: AutoTimeline, space: FreeSpace) {
+  const centre = (space.xStart + space.xEnd) / 2 - (VEHICLE.wheelbase + VEHICLE.frontOverhang - VEHICLE.rearOverhang) / 2;
+  const { pose } = tl.end;
+  if (centre > pose.x) tl.addDrive((centre - pose.x) / Math.cos(pose.heading), 'end');
 }
 
 // ---------- preview: critical points ----------
@@ -211,11 +220,6 @@ const centreOf = (p: Pose) => {
   return new THREE.Vector3(p.x + Math.cos(p.heading) * c, 0.05, p.z + Math.sin(p.heading) * c);
 };
 
-export function clearanceLabel(n: NearestObstacle) {
-  const what = n.kind === 'car' ? `dall'auto ${n.behind ? 'dietro' : 'davanti'}` : "dall'ostacolo";
-  return `${Math.round(n.distance * 100)} cm ${what}`;
-}
-
 export function previewOf(tl: AutoTimeline, collisions: Collisions, curbPoorlyVisible: boolean): AutoPreview {
   const path: THREE.Vector3[] = [];
   const pathTimes: number[] = [];
@@ -235,7 +239,7 @@ export function previewOf(tl: AutoTimeline, collisions: Collisions, curbPoorlyVi
       kind: 'clearance',
       t: min.t,
       position: new THREE.Vector3(min.n.point[0], 0.05, min.n.point[1]),
-      label: clearanceLabel(min.n),
+      label: 'Closest point',
     });
   }
   // The stretch with the hardest accelerations
@@ -250,9 +254,7 @@ export function previewOf(tl: AutoTimeline, collisions: Collisions, curbPoorlyVi
   }
   if (fast) {
     const mid = tl.sample((fast.from + fast.to) / 2);
-    const st = tl.stepAt((fast.from + fast.to) / 2);
-    const kmh = st && st.kind === 'drive' ? st.vpeak * 3.6 : 0;
-    points.push({ kind: 'fast', t: (fast.from + fast.to) / 2, position: centreOf(mid.pose), label: `Tratto più rapido · ${kmh.toFixed(1)} km/h` });
+    points.push({ kind: 'fast', t: (fast.from + fast.to) / 2, position: centreOf(mid.pose), label: 'Fastest stretch' });
   }
   // Where the sensors see poorly (scenario): at the counter-steer, near the curb
   if (curbPoorlyVisible) {
@@ -260,7 +262,7 @@ export function previewOf(tl: AutoTimeline, collisions: Collisions, curbPoorlyVi
     if (t !== null) {
       const fp = footprint(tl.sample(t).pose);
       const rearRight = fp[3];
-      points.push({ kind: 'sensor', t, position: new THREE.Vector3(rearRight[0], 0.05, rearRight[1]), label: 'Qui vedo poco il cordolo' });
+      points.push({ kind: 'sensor', t, position: new THREE.Vector3(rearRight[0], 0.05, rearRight[1]), label: 'Curb hard to see' });
     }
   }
   return { path, pathTimes, fast, points, minClearance: min?.n ?? null, seconds: tl.total };
@@ -296,9 +298,15 @@ export function autoBars(tl: AutoTimeline, t: number, p: AutoBarParams): { left:
     const st = cur.step;
     const done = Math.abs(advanceDistance(st, t));
     const remaining = Math.max(0, st.length - done);
-    side = sideOf(st.steer0) ?? sideOf(nextSteerTarget(tl, t)) ?? 'right';
     const lit = Math.max(1, Math.ceil((remaining / st.length) * p.segments));
-    out[side] = { kind: 'count', lit, total: p.segments, reached: false, blinkStart: null, overshoot: 0 };
+    const count: BarView = { kind: 'count', lit, total: p.segments, reached: false, blinkStart: null, overshoot: 0 };
+    side = sideOf(st.steer0);
+    if (side) out[side] = count;
+    else {
+      // Wheel straight (driving to the point where the steering starts): both mirrors count down together
+      out.left = count;
+      out.right = count;
+    }
   }
 
   // Pre-announcement in the other mirror before the side changes
@@ -323,11 +331,6 @@ function advanceDistance(st: Step & { kind: 'drive' }, t: number) {
   if (tt < ta) return 0.5 * st.apeak * tt * tt;
   if (tt > st.dur - ta) return st.length - 0.5 * st.apeak * (st.dur - tt) ** 2;
   return 0.5 * st.apeak * ta * ta + st.vpeak * (tt - ta);
-}
-
-function nextSteerTarget(tl: AutoTimeline, t: number) {
-  const s = tl.steps.find((x) => x.kind === 'steer' && x.t0 > t && Math.abs(x.to) > 0.01) as (Step & { kind: 'steer' }) | undefined;
-  return s?.to ?? 0;
 }
 
 // ---------- runtime ----------

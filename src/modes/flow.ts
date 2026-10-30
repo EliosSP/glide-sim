@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ONE_MANOEUVRE_MIN_EXTRA, VEHICLE, WIDE_SPACE_MIN } from '../config';
+import { ONE_MANOEUVRE_MIN_EXTRA, VEHICLE } from '../config';
 import type { FreeSpace } from '../scene/parkingLayout';
 import type { VehicleState } from '../vehicle/kinematics';
 import type { Collisions } from '../vehicle/collision';
@@ -9,7 +9,7 @@ import { planParallel, type ParkPlan } from '../planner/parallelPlanner';
 import { AssistedManeuver, type AssistEvent, type AssistParams, type AssistedPhase } from './assisted';
 import type { DriveInput } from '../vehicle/kinematics';
 import {
-  AutoRun, AutoTimeline, autoBars, buildTimeline, clearanceLabel, previewOf,
+  AutoRun, AutoTimeline, addCentring, autoBars, buildTimeline, previewOf,
   type AutoPreview, type SpeedProfile,
 } from './autonomous';
 
@@ -25,8 +25,7 @@ export interface Evaluation {
 
 export type DisplayScreen =
   | { kind: 'drive' }
-  | { kind: 'approach'; evaluation: Evaluation | null; hint: string }
-  | { kind: 'choose'; recommended: ModeChoice; reason: string }
+  | { kind: 'approach'; selected: boolean }
   | { kind: 'assisted'; title: string; line: string; mirror: 'left' | 'right' | null; camera: boolean }
   | { kind: 'inside'; front: number; rear: number; line: string }
   | { kind: 'done'; title: string; lines: string[] }
@@ -85,34 +84,48 @@ type BrakeReason = StopReason | 'cancel';
 const PREVIEW_LOOP = 4.5; // s, length of the animated preview
 const REPLAN_NOTICE = 3.5; // s, the new trajectory is shown before moving again
 const CONFLICT_CLEARANCE = 0.1; // m, a newly arrived obstacle closer than this to the rest of the trajectory
-const DEFAULT_OBSTACLE_LINE = "C'è un ostacolo sul percorso";
+const DEFAULT_OBSTACLE_LINE = "There is an obstacle on the path";
 
 const OFF: BarView = { kind: 'off' };
+const ON: BarView = { kind: 'on' };
+const BAR_FADE_OUT = 1.0; // s: a light that has nothing more to say fades instead of dropping or snapping off
+const BAR_FADE_IN = 0.15; // s
+const BAR_END_FADE = 1.2; // s: after the last manoeuvre step
+
+/** What a mirror light shows right now, and how bright (0..1). */
+interface HeldBar {
+  view: BarView;
+  alpha: number;
+}
 const SLOW = 15 / 3.6; // approach view below this speed
 const FAST = 20 / 3.6;
 const PARK_MAX_SPEED = 10 / 3.6;
 
 const PHASE_LINES: Record<AssistedPhase, { title: string; line: string; mirror: 'left' | 'right' | null }> = {
-  positioning: { title: 'Assistito attivo', line: "Mettiti parallelo all'auto davanti", mirror: 'right' },
-  steer1: { title: 'Sterza', line: 'Da fermo, verso destra', mirror: 'right' },
-  reverse1: { title: 'Retro', line: 'Segui lo specchietto destro', mirror: 'right' },
-  steer2: { title: 'Controsterza', line: 'Da fermo, verso sinistra', mirror: 'left' },
-  reverse2: { title: 'Retro', line: 'Segui lo specchietto sinistro', mirror: 'left' },
-  inside: { title: 'Dentro lo spazio', line: 'Raddrizza le ruote', mirror: null },
-  done: { title: 'Fatto', line: '', mirror: null },
+  positioning: { title: 'Assisted mode', line: 'Line up alongside the car ahead', mirror: 'right' },
+  steer1: { title: 'Steer', line: 'Standing still, to the right', mirror: 'right' },
+  reverse1: { title: 'Reverse', line: 'Follow the right mirror', mirror: 'right' },
+  steer2: { title: 'Counter-steer', line: 'Standing still, to the left', mirror: 'left' },
+  reverse2: { title: 'Reverse', line: 'Follow the left mirror', mirror: 'left' },
+  inside: { title: 'Inside the space', line: 'Straighten the wheels', mirror: null },
+  done: { title: 'Done', line: '', mirror: null },
 };
 
 /** Steps 1–5 and 11–12 of the experience, plus the assisted manoeuvre. */
 export class GlideFlow {
   screen:
-    | 'drive' | 'approach' | 'choose' | 'assisted' | 'assistBlocked' | 'done'
+    | 'drive' | 'approach' | 'assisted' | 'assistBlocked' | 'done'
     | 'autoPreview' | 'autoRunning' | 'autoStopped' | 'autoReplan' = 'drive';
   blinker: Blinker = null;
   chosen: FreeSpace | null = null;
   locked = false;
+  /** The space is chosen by a touch (video); otherwise the nearest free space is the chosen one. */
+  requireSelection = false;
+  selected = false;
   evaluation: Evaluation | null = null;
+  private evalKey = '';
+  private barHold: { left: HeldBar; right: HeldBar; at: number } | null = null;
   maneuver: AssistedManeuver | null = null;
-  recommendation: { mode: ModeChoice; reason: string } | null = null;
   guide: CameraGuide | null = null;
   /** Spaces where the car fits in one manoeuvre (from the lane), for the reconstruction colours. */
   readonly fits = new Map<string, boolean>();
@@ -147,14 +160,19 @@ export class GlideFlow {
     for (const s of spaces) this.fits.set(s.id, planParallel(s, collisions, laneZ) !== null);
   }
 
+  get isSelected() {
+    return !this.requireSelection || this.selected;
+  }
+
   reset() {
+    this.selected = false;
+    this.evalKey = '';
     this.screen = 'drive';
     this.blinker = null;
     this.chosen = null;
     this.locked = false;
     this.evaluation = null;
     this.maneuver = null;
-    this.recommendation = null;
     this.toast = null;
     this.doneInfo = null;
     this.auto = null;
@@ -180,14 +198,15 @@ export class GlideFlow {
 
   onBlinker(side: 'left' | 'right', car: VehicleState, now: number) {
     this.blinker = this.blinker === side ? null : side;
-    this.locked = false;
-    this.evaluation = null;
-    if (this.blinker === 'right' && this.chosen && this.screen === 'approach') {
-      this.locked = true;
-      this.evaluation = this.evaluate(this.chosen, car.z);
-    }
-    if (!this.blinker && this.screen === 'choose') this.screen = 'approach';
+    void car;
     void now;
+  }
+
+  /** Touch on the free space (the blue one): it becomes the chosen space. Only needed with requireSelection. */
+  select() {
+    if (this.screen !== 'approach' || !this.chosen) return;
+    this.selected = true;
+    this.locked = true;
   }
 
   onParkButton(car: VehicleState, now: number, contacts: number) {
@@ -197,20 +216,16 @@ export class GlideFlow {
       this.maneuver = null;
       this.auto = null;
       this.screen = 'approach';
-      this.say('Glide annullato · il controllo è tuo', now);
+      this.say('Glide cancelled · you are in control', now);
       return;
     }
-    if (this.screen === 'choose') {
-      this.screen = 'approach';
-      return;
-    }
-    if (!this.evaluation) return this.say('Metti la freccia a destra per scegliere lo spazio', now);
-    if (!this.evaluation.fits) return this.say('Questo spazio non va bene: scegline un altro', now);
-    if (Math.abs(car.speed) > PARK_MAX_SPEED) return this.say('Rallenta per attivare Glide', now);
-    this.recommendation = this.recommend(this.evaluation.space, car.z);
-    this.screen = 'choose';
+    if (!this.evaluation) return this.say(this.requireSelection && !this.selected ? 'Tap a free space first' : 'No free space nearby', now);
+    if (!this.evaluation.fits) return this.say('This space does not fit: choose another', now);
+    if (Math.abs(car.speed) > PARK_MAX_SPEED) return this.say('Slow down to activate Glide', now);
+    // P arms Glide (lights on both mirrors) and goes straight to the preview of the autonomous manoeuvre
     this.contactsAtStart = contacts;
     this.emit({ type: 'parkActive', t: now });
+    this.startPreview(car, now);
   }
 
   /** P during the autonomous manoeuvre: firm stop, Glide off, back to the approach; the driver has control. */
@@ -227,16 +242,15 @@ export class GlideFlow {
     this.locked = false;
     this.blinker = null;
     this.screen = 'approach';
-    this.say('Glide annullato · il controllo è tuo', now);
+    this.say('Glide cancelled · you are in control', now);
   }
 
-  onModeChosen(mode: ModeChoice, car: VehicleState, now: number) {
-    if (this.screen !== 'choose' || !this.evaluation) return;
-    this.emit({ type: 'modeChosen', mode, t: now });
+  /** A1: animated preview of the whole trajectory, with its critical points. */
+  private startPreview(car: VehicleState, now: number) {
+    if (!this.evaluation) return;
     const plan = planParallel(this.evaluation.space, this.collisions, car.z);
-    if (!plan) return this.say('Da qui non riesco a calcolare la manovra', now);
-    if (mode === 'assisted') return this.startAssisted(plan, car, now, 'positioning');
-    // A1: animated preview of the whole trajectory, with its critical points
+    if (!plan) return this.say("Can't plan the manoeuvre from here", now);
+    this.emit({ type: 'modeChosen', mode: 'auto', t: now });
     this.autoPlan = plan;
     const pose = { x: car.x, z: car.z, heading: car.heading };
     const tl = buildTimeline(pose, car.steer, 'position', plan, this.collisions, this.settings.speedProfile);
@@ -296,7 +310,7 @@ export class GlideFlow {
     this.blinker = null;
     this.locked = false;
     this.evaluation = null;
-    this.say('Il controllo è tuo', now);
+    this.say('You are in control', now);
   }
 
   /** I3: an obstacle appeared (already added to the collisions): stop, re-plan, announce, continue. */
@@ -422,6 +436,7 @@ export class GlideFlow {
     if (stage === 'end') {
       tl = new AutoTimeline(pose, car.steer, this.settings.speedProfile);
       tl.addSteer(0, 'end');
+      addCentring(tl, this.autoPlan.space);
     } else {
       if (stage === 'position') {
         const plan = planParallel(this.autoPlan.space, this.collisions, car.z);
@@ -441,15 +456,9 @@ export class GlideFlow {
   private finishAuto(now: number) {
     const run = this.auto!;
     const seen = run.minSeen;
-    const predicted = run.preview.minClearance;
-    let line = seen ? `minimo ${clearanceLabel(seen)}` : '';
-    if (seen && predicted) {
-      const asPredicted = Math.abs(seen.distance - predicted.distance) <= 0.05;
-      line += asPredicted ? ', come previsto' : ` (previsti ${Math.round(predicted.distance * 100)})`;
-    }
     const seconds = Math.round(now - this.autoStartedAt);
     this.emit({ type: 'autoDone', seconds, minClearance: seen?.distance ?? null, t: now });
-    this.doneInfo = { title: `Parcheggiato in ${seconds} s`, lines: [line, 'Il controllo torna a te'] };
+    this.doneInfo = { title: 'Parked', lines: ['Control is back with you'] };
     this.screen = 'done';
     this.blinker = null;
     this.locked = false;
@@ -479,23 +488,14 @@ export class GlideFlow {
     const len = space.xEnd - space.xStart;
     const extra = Math.round((len - VEHICLE.length) * 100);
     const plan = planParallel(space, this.collisions, laneZ);
-    if (plan) return { space, fits: true, title: 'Ci sta', line: `${extra} cm più lungo della tua auto` };
-    if (extra <= 0) return { space, fits: false, title: 'Non ci sta', line: `${-extra} cm più corto della tua auto` };
+    if (plan) return { space, fits: true, title: 'Fits', line: `${extra} cm longer than your car` };
+    if (extra <= 0) return { space, fits: false, title: 'Does not fit', line: `${-extra} cm shorter than your car` };
     return {
       space,
       fits: false,
-      title: 'Non ci sta in una manovra',
-      line: `${extra} cm più lungo della tua auto, ne servono ${Math.round(ONE_MANOEUVRE_MIN_EXTRA * 100)}`,
+      title: 'Does not fit in one manoeuvre',
+      line: `${extra} cm longer than your car, ${Math.round(ONE_MANOEUVRE_MIN_EXTRA * 100)} needed`,
     };
-  }
-
-  private recommend(space: FreeSpace, laneZ: number): { mode: ModeChoice; reason: string } {
-    if (this.settings.curbPoorlyVisible) return { mode: 'assisted', reason: 'il cordolo si vede poco, i sensori non sono sicuri' };
-    const len = space.xEnd - space.xStart;
-    if (len >= WIDE_SPACE_MIN) return { mode: 'auto', reason: 'spazio ampio e ben rilevato' };
-    const plan = planParallel(space, this.collisions, laneZ);
-    const margin = plan ? Math.round(plan.minCarClearance * 100) : 0;
-    return { mode: 'assisted', reason: `spazio stretto, ${margin} cm di margine minimo` };
   }
 
   /** Free space nearest to the car, among those just behind it or ahead. */
@@ -515,17 +515,30 @@ export class GlideFlow {
     return best;
   }
 
-  update(car: VehicleState, now: number, contacts: number): { bars: { left: BarView; right: BarView }; display: DisplayModel } {
+  update(car: VehicleState, now: number, contacts: number): { bars: { left: BarView; right: BarView }; barAlpha: { left: number; right: number }; display: DisplayModel } {
     const speed = Math.abs(car.speed);
     const pose: Pose = { x: car.x, z: car.z, heading: car.heading };
     this.lastPose = pose;
-    let bars = { left: OFF, right: OFF };
+    // After P the mirror lights are on and steady, until the manoeuvre gives them something to show
+    const armed = this.screen === 'autoPreview' || this.screen === 'autoReplan' || this.screen === 'autoStopped' || this.screen === 'autoRunning';
+    let bars: { left: BarView; right: BarView } = armed ? { left: ON, right: ON } : { left: OFF, right: OFF };
     this.guide = null;
 
     // Step 1–2: approach view and automatic highlight of the nearest space
     if (this.screen === 'drive' && speed < SLOW && this.nearestSpace(car.x)) this.screen = 'approach';
     if (this.screen === 'approach' && speed > FAST && !this.blinker) this.screen = 'drive';
     if ((this.screen === 'approach' || this.screen === 'drive') && !this.locked) this.chosen = this.nearestSpace(car.x);
+    // The space is evaluated as soon as it is chosen: no blinker, nothing written on the display
+    if (this.screen === 'approach' && this.chosen && this.isSelected) {
+      const key = `${this.chosen.id}|${Math.round(car.z * 10)}`;
+      if (key !== this.evalKey) {
+        this.evaluation = this.evaluate(this.chosen, car.z);
+        this.evalKey = key;
+      }
+    } else if (this.screen === 'approach' || this.screen === 'drive') {
+      this.evaluation = null;
+      this.evalKey = '';
+    }
 
     if (this.screen === 'assisted' && this.maneuver) {
       bars = this.maneuver.update(car, now);
@@ -534,10 +547,10 @@ export class GlideFlow {
         const r = this.maneuver.result;
         const clean = r.overs === 0 && contacts === this.contactsAtStart;
         this.doneInfo = {
-          title: clean ? 'Parcheggiato al primo tentativo' : 'Parcheggiato',
+          title: clean ? 'Parked at the first attempt' : 'Parked',
           lines: [
-            `${Math.round(r.curbGap * 100)} cm dal marciapiede`,
-            `${Math.round(r.frontGap * 100)} cm davanti · ${Math.round(r.rearGap * 100)} cm dietro`,
+            `${Math.round(r.curbGap * 100)} cm from the curb`,
+            `${Math.round(r.frontGap * 100)} cm ahead · ${Math.round(r.rearGap * 100)} cm behind`,
           ],
         };
         this.screen = 'done';
@@ -571,8 +584,15 @@ export class GlideFlow {
       // Driving away after a takeover means finishing by hand
       if (Math.hypot(car.x - this.stopPose.x, car.z - this.stopPose.z) > 0.3) this.toManual(now);
     }
+    let barAlpha = { left: 1, right: 1 };
     if (this.screen === 'autoRunning' && this.auto && !this.braking) {
-      bars = autoBars(this.auto.timeline, this.auto.t, { lead: this.settings.autoLead, announceLead: this.settings.assist.announceLead, segments: this.settings.assist.segments });
+      const raw = autoBars(this.auto.timeline, this.auto.t, { lead: this.settings.autoLead, announceLead: this.settings.assist.announceLead, segments: this.settings.assist.segments });
+      ({ bars, alpha: barAlpha } = this.smoothBars(raw, now));
+    } else if (this.screen === 'done' && this.barHold) {
+      // End of the manoeuvre: the lights fade out together
+      ({ bars, alpha: barAlpha } = this.smoothBars({ left: OFF, right: OFF }, now, BAR_END_FADE));
+    } else {
+      this.barHold = null;
     }
 
     if (this.screen === 'done' && car.gear === 'D' && car.speed > 1) {
@@ -586,6 +606,7 @@ export class GlideFlow {
     if (this.toast && (now > this.toast.until || this.screen !== this.toastScreen)) this.toast = null;
     return {
       bars,
+      barAlpha,
       display: {
         gear: this.screen === 'done' ? 'P' : car.gear,
         speedKmh: speed * 3.6,
@@ -596,20 +617,38 @@ export class GlideFlow {
     };
   }
 
+  /**
+   * Autonomous lights, same grammar, no sudden moves: a bar that would drop to nothing (wheels straightening,
+   * the light changing side, a phase boundary with nothing lit) keeps what it showed and fades out; a new
+   * or rising bar fades in. `fade` is how long a fade-out takes.
+   */
+  private smoothBars(raw: { left: BarView; right: BarView }, now: number, fade = BAR_FADE_OUT) {
+    const h = (this.barHold ??= { left: { view: OFF, alpha: 0 }, right: { view: OFF, alpha: 0 }, at: now });
+    const dt = Math.max(0, now - h.at);
+    h.at = now;
+    for (const side of ['left', 'right'] as const) {
+      const held = h[side];
+      const v = raw[side];
+      const falling = v.kind === 'steer' && held.view.kind === 'steer' && v.fill < held.view.fill - 1e-3;
+      if (v.kind === 'off' || falling) {
+        held.alpha = Math.max(0, held.alpha - dt / fade);
+      } else {
+        held.view = v;
+        held.alpha = Math.min(1, held.alpha + dt / BAR_FADE_IN);
+      }
+    }
+    return {
+      bars: { left: h.left.alpha > 0 ? h.left.view : OFF, right: h.right.alpha > 0 ? h.right.view : OFF },
+      alpha: { left: h.left.alpha, right: h.right.alpha },
+    };
+  }
+
   private displayScreen(): DisplayScreen {
     switch (this.screen) {
       case 'drive':
         return { kind: 'drive' };
       case 'approach':
-        return {
-          kind: 'approach',
-          evaluation: this.evaluation,
-          hint: this.evaluation
-            ? this.evaluation.fits ? 'Premi P per parcheggiare' : 'Togli la freccia e scegline un altro'
-            : this.chosen ? 'Metti la freccia per valutare lo spazio' : 'Cerco spazi liberi',
-        };
-      case 'choose':
-        return { kind: 'choose', recommended: this.recommendation!.mode, reason: this.recommendation!.reason };
+        return { kind: 'approach', selected: this.isSelected };
       case 'assisted': {
         const m = this.maneuver!;
         if (m.phase === 'inside') {
@@ -625,11 +664,11 @@ export class GlideFlow {
       case 'done':
         return { kind: 'done', title: this.doneInfo!.title, lines: this.doneInfo!.lines };
       case 'autoPreview':
-        return { kind: 'autoPreview', title: 'Anteprima', seconds: this.auto!.preview.seconds, countdown: null };
+        return { kind: 'autoPreview', title: 'Ready to park', seconds: this.auto!.preview.seconds, countdown: null };
       case 'autoReplan':
         return {
           kind: 'autoPreview',
-          title: 'Cambio traiettoria: ostacolo',
+          title: 'Path changed: obstacle',
           seconds: this.auto!.preview.seconds,
           countdown: Math.max(1, Math.ceil(this.replanUntil - this.nowForDisplay)),
         };
@@ -638,25 +677,25 @@ export class GlideFlow {
       case 'assistBlocked':
         return {
           kind: 'autoStopped',
-          title: 'La manovra non ci sta',
+          title: "The manoeuvre doesn't fit",
           line: this.obstacleLine,
-          options: [{ key: 'M', label: 'Finisco io a mano' }],
+          options: [{ key: 'M', label: 'I will finish by hand' }],
         };
       case 'autoStopped': {
-        const assisted = { key: 'A', label: 'Continua in assistito da qui' };
-        const manual = { key: 'M', label: 'Finisco io a mano' };
+        const assisted = { key: 'A', label: 'Continue in assisted mode from here' };
+        const manual = { key: 'M', label: 'I will finish by hand' };
         if (this.stopReason === 'driver') {
           return {
             kind: 'autoStopped',
-            title: 'Hai preso il controllo',
-            line: 'Mi sono fermato. Come vuoi continuare?',
-            options: [{ key: 'Invio', label: 'Riprendi in autonomo' }, assisted, manual],
+            title: 'You took control',
+            line: 'I stopped. How would you like to continue?',
+            options: [{ key: 'Enter', label: 'Resume autonomous' }, assisted, manual],
           };
         }
         if (this.stopReason === 'confidence') {
-          return { kind: 'autoStopped', title: 'Non vedo bene il cordolo', line: 'Mi sono fermato: da qui continua tu in assistito', options: [assisted, manual] };
+          return { kind: 'autoStopped', title: 'I cannot see the curb well', line: 'I stopped: continue from here in assisted mode', options: [assisted, manual] };
         }
-        return { kind: 'autoStopped', title: 'Non trovo una manovra sicura', line: this.obstacleLine, options: [assisted, manual] };
+        return { kind: 'autoStopped', title: 'I cannot find a safe manoeuvre', line: this.obstacleLine, options: [assisted, manual] };
       }
     }
   }

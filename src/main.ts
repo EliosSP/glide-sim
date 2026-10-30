@@ -8,9 +8,11 @@ import { buildStreet } from './scene/street';
 import { createCar, poseCar } from './vehicle/carModel';
 import { VehicleState, type DriveInput } from './vehicle/kinematics';
 import { Keyboard } from './vehicle/input';
+import { PathRibbon, MirrorGlows } from './scene/pathRibbon';
+import { NATURAL_GAZE } from './views/cameras';
 import { DEBUG_LAYER, Views, VIEW_LABELS, type Glance } from './views/cameras';
 import { Hud } from './ui/hud';
-import { CentralDisplay, type ReconLabel } from './display/centralDisplay';
+import { CentralDisplay } from './display/centralDisplay';
 import { Collisions, type ContactKind } from './vehicle/collision';
 import { MirrorReflection, aimMirror } from './mirrors/mirrorReflection';
 import { LightBar, type BarView } from './mirrors/lightBar';
@@ -20,7 +22,7 @@ import { GlideFlow, type FlowEvent } from './modes/flow';
 import { GlideAudio } from './audio/sounds';
 import { Narrator } from './audio/narrator';
 import { DemoDirector } from './modes/demo';
-import { Subtitles, TrialIndicator } from './ui/overlay';
+import { Subtitles, TrialIndicator, VideoOverlay, VIDEO_OVERLAY_OFF, type VideoOverlayState } from './ui/overlay';
 import { Logger, download } from './ui/logger';
 import { bodyToCurb } from './vehicle/collision';
 import { HeadTracker } from './tracking/headTracker';
@@ -84,7 +86,7 @@ const barLook = { turquoiseAuto: false, grayscale: false, position: 'bottom' as 
 
 /** Light bar on the lower rim (concept) or on the upper rim of the mirror housing. */
 function placeBars() {
-  for (const g of [rig.mirrors.left, rig.mirrors.right]) g.getObjectByName('bar-mount')!.position.y = barLook.position === 'top' ? 0.06 : -0.0695;
+  for (const g of [rig.mirrors.left, rig.mirrors.right]) g.getObjectByName('bar-mount')!.position.y = barLook.position === 'top' ? 0.06 : -0.0803;
 }
 const TURQUOISE = '#5fe8dc';
 const autoBarStyle: BarStyle = { ...barStyle, color: TURQUOISE };
@@ -106,9 +108,9 @@ const logger = new Logger();
 const flow = new GlideFlow(street.spaces, collisions, flowSettings, onFlowEvent, START.z);
 
 // --- other actors (scenario "Vuoto" / "Animato") ---
-const actorSettings: ActorSettings = { ...scenarioSettings('empty'), waitingGap: 6, hazard: false };
+const actorSettings: ActorSettings = { ...scenarioSettings('empty'), waitingGap: 4.5, hazard: false };
 const actors = new Actors(world.scene, collisions, actorSettings);
-actors.onSettled = () => flow.onTrafficSettled(car, nowS(), "L'auto dietro è troppo vicina");
+actors.onSettled = () => flow.onTrafficSettled(car, nowS(), 'The car behind is too close');
 actors.onHazard = (e) => {
   console.debug('[glide] hazard', e);
   flow.onHazard(e);
@@ -146,7 +148,7 @@ function logFlowEvent(e: FlowEvent) {
   const L = (event: string, f: Parameters<Logger['log']>[2] = {}) => logger.log(now, event, { phase, ...f });
   switch (e.type) {
     case 'parkButton': return L('park_button');
-    case 'parkActive': return L('park_active', { extra: { recommended: flow.recommendation?.mode, reason: flow.recommendation?.reason } });
+    case 'parkActive': return L('park_active');
     case 'modeChosen': return L('mode_chosen', { value: e.mode });
     case 'phase':
       if (e.phase !== 'done') return L('phase', { phase: e.phase, value: e.phase });
@@ -173,7 +175,7 @@ function logFlowEvent(e: FlowEvent) {
   }
 }
 
-const MANEUVER_SCREENS = new Set<GlideFlow['screen']>(['choose', 'assisted', 'assistBlocked', 'autoPreview', 'autoRunning', 'autoStopped', 'autoReplan']);
+const MANEUVER_SCREENS = new Set<GlideFlow['screen']>(['assisted', 'assistBlocked', 'autoPreview', 'autoRunning', 'autoStopped', 'autoReplan']);
 const SENSOR_SCREENS = new Set<GlideFlow['screen']>(['assisted', 'autoRunning', 'autoReplan', 'autoStopped']);
 
 function actorContext(): ActorContext {
@@ -186,6 +188,9 @@ function actorContext(): ActorContext {
   return { maneuver: MANEUVER_SCREENS.has(flow.screen), counterSteer, egoSpeed: car.speed };
 }
 let lastBarViews: { left: BarView; right: BarView } | null = null;
+let lastBarAlpha = { left: 1, right: 1 };
+const pathRibbon = new PathRibbon(world.scene);
+const mirrorGlows = new MirrorGlows(rig.mirrors);
 let shownPlan: ParkPlan | null = null;
 const pathLine = new THREE.Line(
   new THREE.BufferGeometry(),
@@ -205,7 +210,7 @@ function showPath(plan: ParkPlan | null) {
 
 const views = new Views(rig, world.renderer.domElement);
 const display = new CentralDisplay(rig.displayMesh!);
-const recon = new ReconView(street.parkedCars, street.oppositeCars, street.spaces, 640, 576);
+const recon = new ReconView(street.parkedCars, street.oppositeCars, street.spaces, 1024, 420);
 const rearCam = new RearCamera(rig, 640, 576);
 const hud = new Hud();
 const keys = new Keyboard();
@@ -386,7 +391,7 @@ function setHeadTracking(on: boolean) {
 function setScenario(sc: Scenario) {
   applyScenario(sc);
   resetAll();
-  flow.notice(sc === 'busy' ? 'Scenario animato' : 'Scenario vuoto', nowS());
+  flow.notice(sc === 'busy' ? 'Busy street' : 'Empty street', nowS());
 }
 
 function applyScenario(sc: Scenario) {
@@ -488,12 +493,16 @@ const demo = new DemoDirector(
     car,
     flow,
     bars: () => lastBarViews,
+    barAlpha: () => lastBarAlpha,
     command: (c) => {
       const now = nowS();
       if (c === 'blinkerRight') flow.onBlinker('right', car, now);
-      else if (c === 'park') flow.onParkButton(car, now, contacts);
-      else if (c === 'assisted') flow.onModeChosen('assisted', car, now);
-      else if (c === 'auto') flow.onModeChosen('auto', car, now);
+      else if (c === 'park') {
+        pressT = simTime;
+        flow.onParkButton(car, now, contacts);
+      }
+      else if (c === 'assisted') flow.onSwitchToAssisted(car, now);
+      else if (c === 'select') flow.select();
       else if (c === 'start') flow.onStart(car, now);
       else car.setGear(c === 'gearR' ? 'R' : 'D');
     },
@@ -502,16 +511,72 @@ const demo = new DemoDirector(
       resetAll(x);
     },
     camera: (view, glance = null, opts = {}) => {
-      views.split = false;
+      views.split = videoSplit;
+      views.splitRatio = videoSplit ? 0.7 : 0.5;
       views.current = view;
       views.glanceZoom = opts.zoom ?? null;
-      views.closeUp = opts.closeUp ?? null;
+      views.gaze = opts.natural ? NATURAL_GAZE : null;
+      views.closeUp = videoSplit ? 'bird' : opts.closeUp ?? null;
       demoGlance = glance;
     },
     voice: narrator,
+    overlay: (o) => Object.assign(overlayState, o),
+    tap: (label) => (display.pressed = label),
+    tapSpace: (on) => (tapSpace = on),
+    split: (on) => {
+      videoSplit = on;
+      views.split = on;
+      views.splitRatio = on ? 0.7 : 0.5;
+    },
   },
   demoSettings,
 );
+// Concept video (key 9): same director, other script; no voice or subtitles, own overlay
+const videoOverlay = new VideoOverlay();
+const overlayState: VideoOverlayState = { ...VIDEO_OVERLAY_OFF };
+let videoDemo = false;
+let videoSplit = false; // video: driver view large on the left, outside view in a narrow panel on the right
+let tapSpace = false; // video: finger tap shown on the chosen space
+const tapPoint = new THREE.Vector3();
+let pressT = -10; // sim time of the last press of the physical P button
+const anchorWorld = new THREE.Vector3();
+const anchorNdc = new THREE.Vector3();
+
+/** Where the current video bubble points, on the picture (0..1), or null when that is not in view. */
+function noteAnchor(): { x: number; y: number } | null {
+  const n = overlayState.note;
+  if (!n) return null;
+  const w = anchorWorld;
+  const pts = flow.auto?.preview.points;
+  let ok: boolean;
+  switch (n.anchor) {
+    case 'mirrors': // one touch point for both: halfway between them
+      rig.mirrors.left.getWorldPosition(w);
+      w.add(rig.mirrors.right.getWorldPosition(anchorNdc)).multiplyScalar(0.5);
+      ok = true;
+      break;
+    case 'display': rig.displayMesh!.getWorldPosition(w); ok = true; break;
+    case 'start': display.canvasToWorld(CentralDisplay.START_BUTTON.x, CentralDisplay.START_BUTTON.y, w); ok = true; break;
+    case 'closest':
+    case 'fastest': {
+      const cp = pts?.find((p) => p.kind === (n.anchor === 'closest' ? 'clearance' : 'fast'));
+      ok = !!cp && display.mapToWorld(recon, cp.position, w) !== null;
+      break;
+    }
+    case 'space':
+      ok = !!flow.chosen && display.mapToWorld(recon, tapPoint.set((flow.chosen.xStart + flow.chosen.xEnd) / 2, 0.05, ROAD.curbZ - 1.05), w) !== null;
+      break;
+    case 'car':
+      w.set(car.x + Math.cos(car.heading) * 1.35, 1.7, car.z + Math.sin(car.heading) * 1.35);
+      ok = true;
+      break;
+  }
+  if (!ok) return null;
+  views.active.updateMatrixWorld(true);
+  anchorNdc.copy(w).project(views.active);
+  if (anchorNdc.z > 1 || Math.abs(anchorNdc.x) > 1.05 || Math.abs(anchorNdc.y) > 1.05) return null;
+  return { x: (anchorNdc.x + 1) / 2, y: (1 - anchorNdc.y) / 2 };
+}
 let subtitleText: string | null = null;
 let hudBeforeDemo = true;
 const demoFolder = gui.addFolder('Demo');
@@ -520,10 +585,20 @@ demoFolder.add(narrator, 'enabled').name('Voce narrante');
 demoFolder.add(narrator, 'volume', 0, 1, 0.05).name('Volume voce');
 demoFolder.add(demoSettings, 'takeover').name('Presa di controllo');
 demoFolder.add({ go: () => toggleDemo() }, 'go').name('Avvia / ferma demo (0)');
+demoFolder.add({ go: () => toggleDemo('video') }, 'go').name('Video concept (9)');
+demoFolder.add({ go: () => toggleRecording() }, 'go').name('Registra video (scheda)');
 
-function toggleDemo() {
+function toggleDemo(kind: 'pitch' | 'video' = 'pitch') {
   if (demo.active) {
     demo.stop();
+    videoDemo = false;
+    Object.assign(overlayState, VIDEO_OVERLAY_OFF);
+    display.pressed = null;
+    tapSpace = false;
+    videoSplit = false;
+    views.split = false;
+    views.splitRatio = 0.5;
+    flow.requireSelection = false;
     keys.allow = null;
     hud.setVisible(hudBeforeDemo && !session.testMode);
     updateLogEnabled();
@@ -533,13 +608,17 @@ function toggleDemo() {
     hud.setVisible(false);
     gui.show((guiVisible = false));
     debug.showPath = false;
-    keys.allow = new Set(['Digit0', 'Escape', 'KeyF']);
+    keys.allow = new Set(['Digit0', 'Digit9', 'Escape', 'KeyF']);
     logger.endTrial(nowS(), 'reset');
-    demo.start();
+    videoDemo = kind === 'video';
+    flow.requireSelection = videoDemo; // the video chooses the space with a touch
+    Object.assign(overlayState, VIDEO_OVERLAY_OFF);
+    demo.start(kind);
     updateLogEnabled();
   }
   demoGlance = null;
   views.glanceZoom = null;
+  views.gaze = null;
   views.closeUp = null;
   subtitleText = null;
   layout();
@@ -579,9 +658,10 @@ function blinker(side: 'left' | 'right') {
   const ev = flow.evaluation;
   if (ev) logger.log(nowS(), 'space_evaluated', { phase: flow.screen, side, value: ev.fits ? 'fits' : 'no_fit', extra: { space: ev.space.id, title: ev.title, line: ev.line } });
 }
-keys.on('KeyP', () => flow.onParkButton(car, nowS(), contacts));
-keys.on('Digit1', () => flow.onModeChosen('assisted', car, nowS()));
-keys.on('Digit2', () => flow.onModeChosen('auto', car, nowS()));
+keys.on('KeyP', () => {
+  pressT = simTime;
+  flow.onParkButton(car, nowS(), contacts);
+});
 keys.on('Enter', () => flow.onStart(car, nowS()));
 keys.on('NumpadEnter', () => flow.onStart(car, nowS()));
 keys.on('KeyA', () => flow.onSwitchToAssisted(car, nowS()));
@@ -596,6 +676,7 @@ keys.on('KeyN', () => setScenario(actorSettings.scenario === 'empty' ? 'busy' : 
 keys.on('Escape', () => (demo.active ? toggleDemo() : resetAll()));
 keys.on('Backspace', () => resetAll()); // in fullscreen Esc only leaves fullscreen
 keys.on('Digit0', () => toggleDemo());
+keys.on('Digit9', () => toggleDemo('video'));
 keys.on('KeyI', () => {
   session.indicator = !session.indicator;
   updateIndicator();
@@ -658,6 +739,7 @@ if (URL_PARAMS.get('test') === '1') setTestMode(true);
 else updateIndicator();
 // The demo starts once the environment has had a moment to load
 if (URL_PARAMS.get('demo') === '1') setTimeout(() => toggleDemo(), 1500);
+if (URL_PARAMS.get('video') === '1') setTimeout(() => toggleDemo('video'), 1500);
 
 // --- loop ---
 const timer = new THREE.Timer();
@@ -736,6 +818,10 @@ function frame(time: number) {
   views.update(car.x, car.z, car.heading, dt);
   world.followSun(car.x, car.z);
   subtitles.set(demo.active ? subtitleText : null, world.renderer.domElement.getBoundingClientRect());
+  // Physical P button: pushed in for a moment when pressed, ring lit while Glide is armed
+  const pe = simTime - pressT;
+  rig.pButton?.set(pe < 0.1 ? pe / 0.1 : pe < 0.35 ? 1 - (pe - 0.1) / 0.25 : 0, MANEUVER_SCREENS.has(flow.screen));
+  videoOverlay.set(demo.active && videoDemo ? overlayState : null, world.renderer.domElement.getBoundingClientRect(), noteAnchor(), dt);
 
   const now = nowS();
   actors.update(dt, now, { x: car.x, z: car.z, heading: car.heading }, actorContext());
@@ -745,8 +831,8 @@ function frame(time: number) {
   const auto = barLook.turquoiseAuto && AUTO_SCREENS.has(flow.screen);
   if (auto) Object.assign(autoBarStyle, barStyle, { color: TURQUOISE });
   bars.left.painter.style = bars.right.painter.style = auto ? autoBarStyle : barStyle;
-  bars.left.draw(out.bars.left, now);
-  bars.right.draw(out.bars.right, now);
+  bars.left.draw(out.bars.left, now, out.barAlpha.left);
+  bars.right.draw(out.bars.right, now, out.barAlpha.right);
   frameDt = dt;
   logFrame(now);
   // Head tracking, hook 3/3: calibration guide and preview (full preview never in test mode)
@@ -756,23 +842,32 @@ function frame(time: number) {
   const showPreview = gaze.preview || calibration.active || tracker.status === 'starting' || tracker.status === 'error';
   trackingPreview.draw(tracker, session.testMode ? 'dot' : showPreview && tracker.status !== 'off' ? 'full' : 'none', mapping, null);
   lastBarViews = out.bars;
+  lastBarAlpha = out.barAlpha;
+  // Video, outside panel: the stretch the car is about to drive, and a glow on the mirror whose light is lit
+  const birdView = demo.active && videoDemo && videoSplit;
+  pathRibbon.update(flow.auto, birdView && flow.screen === 'autoRunning', dt);
+  const litBar = (v: BarView) => v.kind === 'steer' || v.kind === 'count';
+  mirrorGlows.update(
+    { left: birdView && litBar(out.bars.left) ? out.barAlpha.left : 0, right: birdView && litBar(out.bars.right) ? out.barAlpha.right : 0 },
+    dt,
+  );
   showPath(flow.maneuver?.plan ?? null);
 
   // Spaces in the reconstruction: blue where the car fits, highlighted when chosen
   for (const sp of street.spaces) {
     const fits = flow.evaluation?.space === sp ? flow.evaluation.fits : flow.fits.get(sp.id)!;
-    const chosen = flow.chosen === sp && (flow.screen === 'approach' || flow.screen === 'choose');
+    const chosen = flow.chosen === sp && flow.screen === 'approach' && flow.isSelected;
     recon.setSpaceLook(sp.id, chosen ? (fits ? 'chosen' : 'chosenNoFit') : fits ? 'fits' : 'noFit');
   }
   const vp = CentralDisplay.viewportFor(out.display);
   const autoInfo = flow.reconInfo(now);
-  const labels: ReconLabel[] = autoInfo ? autoInfo.preview.points.map((p) => ({ position: p.position, text: p.label })) : [];
   if (vp === 'recon') recon.render(world.renderer, { x: car.x, z: car.z, heading: car.heading }, dt, autoInfo, flow.auto?.timeline ?? null);
   if (vp === 'camera') {
     world.renderer.shadowMap.needsUpdate = true;
     rearCam.render(world.renderer, world.scene);
   }
-  display.update(out.display, now, recon, rearCam, flow.guide, labels);
+  display.tapWorld = tapSpace && flow.chosen ? tapPoint.set((flow.chosen.xStart + flow.chosen.xEnd) / 2, 0.05, ROAD.curbZ - 1.05) : null;
+  display.update(out.display, now, recon, rearCam, flow.guide);
 
   render();
 
@@ -881,7 +976,7 @@ let frameDt = 0;
 function gazeTarget(): { side: MirrorGlance; source: 'head' | 'key' } | null {
   if (demo.active) return null;
   const g = views.glance;
-  if (g && g !== 'display') return { side: g, source: glanceSource ?? 'key' };
+  if (g && g !== 'display' && g !== 'dash') return { side: g, source: glanceSource ?? 'key' };
   if (!views.headLook || tracker.status !== 'tracking') return null;
   const side = mirrorInView(views.look, views.mirrorDirections, gaze.mirrorTolerance);
   return side ? { side, source: 'head' } : null;
@@ -924,6 +1019,29 @@ function assistHud(): string[] {
 
 const eyeWorld = new THREE.Vector3();
 
+/** Records this tab (Chrome asks which one) to a .webm file; press again to stop. */
+let recorder: MediaRecorder | null = null;
+async function toggleRecording() {
+  if (recorder) return recorder.stop();
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 60 }, preferCurrentTab: true } as DisplayMediaStreamOptions);
+    const chunks: Blob[] = [];
+    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20_000_000 });
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+      a.download = 'glide-concept.webm';
+      a.click();
+      recorder = null;
+    };
+    recorder.start();
+  } catch {
+    recorder = null; // cancelled
+  }
+}
+
 function render() {
   const r = world.renderer;
   const size = r.getSize(new THREE.Vector2());
@@ -952,18 +1070,31 @@ function render() {
     return;
   }
   r.setScissorTest(true);
-  const half = Math.floor(w / 2);
-  views.setAspect('driver', half / h);
-  views.setAspect('chase', (w - half) / h);
-  r.setViewport(0, 0, half, h);
-  r.setScissor(0, 0, half, h);
+  const half = Math.floor(w * views.splitRatio);
+  const gap = views.splitRatio === 0.5 ? 0 : 6; // video layout: a thin black gutter between the two pictures
+  const lw = half - gap / 2;
+  const rx = half + gap / 2;
+  if (gap) {
+    const prev = new THREE.Color();
+    r.getClearColor(prev);
+    const prevAlpha = r.getClearAlpha();
+    r.setClearColor(0x000000, 1);
+    r.setViewport(lw, 0, gap, h);
+    r.setScissor(lw, 0, gap, h);
+    r.clear();
+    r.setClearColor(prev, prevAlpha);
+  }
+  views.setAspect('driver', lw / h);
+  views.setAspect('chase', (w - rx) / h);
+  r.setViewport(0, 0, lw, h);
+  r.setScissor(0, 0, lw, h);
   r.render(world.scene, views.driver);
-  r.setViewport(half, 0, w - half, h);
-  r.setScissor(half, 0, w - half, h);
+  r.setViewport(rx, 0, w - rx, h);
+  r.setScissor(rx, 0, w - rx, h);
   r.render(world.scene, views.chase);
   hud.setSplitLabels(VIEW_LABELS.driver, VIEW_LABELS.chase);
 }
 
 // Expose for debugging in the console
-Object.assign(window, { placeBars, tracker, gaze, getHeadSource: () => headSource, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews });
+Object.assign(window, { placeBars, tracker, gaze, getHeadSource: () => headSource, mapping, calibration, getGlanceSource: () => glanceSource, actors, audio, actorSettings, debug, gui, demo, demoSettings, session, logger, barStyle, barLook, placeObstacle, car, street, world, views, rig, getManeuver: () => flow.maneuver, flow, flowSettings, getBars: () => lastBarViews, getBarAlpha: () => lastBarAlpha });
 requestAnimationFrame(frame);

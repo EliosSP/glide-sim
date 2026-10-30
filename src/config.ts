@@ -41,8 +41,9 @@ export const ROAD = {
 };
 
 // A single two-arc reverse manoeuvre with this car (2.6 m wheelbase, 35° lock) needs ≥ car + 2.0 m.
-// Group decision: "tight" = car + 2.2 m; car + 1.0 m is shown as "doesn't fit in one manoeuvre".
-export const TARGET_SPACE_LENGTH = VEHICLE.length + 2.2;
+// "Tight" = car + 2.05 m, just above that limit (below it the path comes closer than CONFLICT_CLEARANCE and Glide would stop);
+// car + 1.0 m is shown as "doesn't fit in one manoeuvre".
+export const TARGET_SPACE_LENGTH = VEHICLE.length + 2.05;
 export const SHORT_SPACE_LENGTH = VEHICLE.length + 1.0;
 /** Minimum extra length over the car for a single manoeuvre (from the planner, see above). */
 export const ONE_MANOEUVRE_MIN_EXTRA = 2.0;
